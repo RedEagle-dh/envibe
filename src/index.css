@@ -1,0 +1,146 @@
+@import '@xterm/xterm/css/xterm.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #161b22;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* Drag region for window controls */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Status indicators */
+.status-dot {
+  @apply w-2 h-2 rounded-full;
+}
+
+.status-dot-stopped {
+  @apply bg-envibe-text-subtle;
+}
+
+.status-dot-starting {
+  @apply bg-envibe-warning animate-pulse;
+}
+
+.status-dot-running {
+  @apply bg-envibe-success;
+}
+
+.status-dot-stopping {
+  @apply bg-envibe-warning animate-pulse;
+}
+
+.status-dot-error {
+  @apply bg-envibe-danger;
+}
+
+/* Panel styling */
+.panel {
+  @apply bg-envibe-bg-secondary border border-envibe-border rounded-lg overflow-hidden;
+}
+
+.panel-header {
+  @apply px-4 py-3 border-b border-envibe-border flex items-center justify-between;
+}
+
+.panel-title {
+  @apply text-sm font-medium text-envibe-text;
+}
+
+.panel-content {
+  @apply overflow-auto;
+}
+
+/* List item hover states */
+.list-item {
+  @apply px-4 py-3 border-b border-envibe-border-muted cursor-pointer transition-colors;
+}
+
+.list-item:hover {
+  @apply bg-envibe-bg-tertiary;
+}
+
+.list-item.selected {
+  @apply bg-envibe-bg-tertiary border-l-2 border-l-envibe-accent;
+}
+
+/* Button styles */
+.btn {
+  @apply px-3 py-1.5 rounded-md text-sm font-medium transition-colors;
+}
+
+.btn-primary {
+  @apply bg-envibe-accent-emphasis text-white hover:bg-envibe-accent;
+}
+
+.btn-success {
+  @apply bg-envibe-success-emphasis text-white hover:bg-envibe-success;
+}
+
+.btn-danger {
+  @apply bg-envibe-danger-emphasis text-white hover:bg-envibe-danger;
+}
+
+.btn-ghost {
+  @apply text-envibe-text-muted hover:text-envibe-text hover:bg-envibe-bg-tertiary;
+}
+
+/* Icon button */
+.icon-btn {
+  @apply p-1.5 rounded-md text-envibe-text-muted hover:text-envibe-text hover:bg-envibe-bg-tertiary transition-colors;
+}
+
+/* Badge */
+.badge {
+  @apply px-2 py-0.5 text-xs rounded-full;
+}
+
+.badge-success {
+  @apply bg-envibe-success-emphasis/20 text-envibe-success;
+}
+
+.badge-warning {
+  @apply bg-envibe-warning-emphasis/20 text-envibe-warning;
+}
+
+.badge-danger {
+  @apply bg-envibe-danger-emphasis/20 text-envibe-danger;
+}
+
+.badge-muted {
+  @apply bg-envibe-bg-tertiary text-envibe-text-muted;
+}

@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output — frontend
+dist/
+dist-electron/
+
+# Build output — Rust backend
+backend/target/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local

@@ -1,0 +1,74 @@
+{
+  "name": "envibe",
+  "version": "1.0.0",
+  "description": "Dev orchestration tool for parallel project management",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"npm run electron:watch\"",
+    "build": "tsc -p tsconfig.electron.json && vite build && electron-builder",
+    "electron:watch": "tsc -p tsconfig.electron.json && electron .",
+    "build:rust": "cd backend && cargo build --release"
+  },
+  "keywords": [
+    "electron",
+    "dev-tools",
+    "orchestration",
+    "docker"
+  ],
+  "author": "Envibe Contributors <envibe@users.noreply.github.com>",
+  "homepage": "https://github.com/envibe/envibe",
+  "license": "MIT",
+  "build": {
+    "appId": "com.envibe.app",
+    "productName": "Envibe",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/target/release/envibe",
+        "to": "bin/envibe"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm",
+        "pacman",
+        "tar.gz"
+      ],
+      "category": "Development"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.23",
+    "concurrently": "^9.2.1",
+    "electron": "^40.0.0",
+    "electron-builder": "^26.4.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.18",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zustand": "^5.0.10"
+  }
+}

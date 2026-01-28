@@ -1,0 +1,38 @@
+name: ExampleProject
+
+# Optional: project-level env file (relative to project root)
+# All process services will inherit these variables
+env-file: .env
+
+services:
+  # Note: postgres and redis are NOT needed here if they're already running
+  # via docker-compose. Envibe auto-discovers running compose containers.
+
+  # Local development server
+  app:
+    type: process
+    command: npm run dev
+    working_dir: .
+    # Optional: service-level env file (overrides project env-file)
+    env-file: .env.local
+    env:
+      # Inline env vars have highest priority (override env files)
+      # Use ${service.port} to reference auto-discovered compose services
+      DATABASE_URL: postgres://dev:dev@localhost:${postgres.port}/example
+      REDIS_URL: redis://localhost:${redis.port}
+      PORT: "3000"
+    depends_on:
+      - postgres
+      - redis
+
+  # Background worker process
+  worker:
+    type: process
+    command: npm run worker
+    working_dir: .
+    env:
+      DATABASE_URL: postgres://dev:dev@localhost:${postgres.port}/example
+      REDIS_URL: redis://localhost:${redis.port}
+    depends_on:
+      - postgres
+      - redis
