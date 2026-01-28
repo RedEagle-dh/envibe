@@ -4,6 +4,8 @@ A desktop application for orchestrating parallel development projects. Manage Do
 
 Built with Electron, React, and a Rust backend.
 
+<img width="1915" height="1076" alt="image" src="https://github.com/user-attachments/assets/76042d2a-f832-4ed5-a528-ee76f3d820a0" />
+
 ## Features
 
 - **Project management** -- Add local project directories and auto-discover their services (Docker Compose, standalone containers, processes)
