@@ -1,6 +1,12 @@
 import { create } from 'zustand';
-import type { Project, LogEntry, ServiceStatus, AppSettings, AIAgent, Snapshot, TerminalSession, Service, TerminalType } from '../types';
+import type { Project, LogEntry, ServiceStatus, AppSettings, AIAgent, Snapshot, TerminalSession, Service, TerminalType, MergeResult } from '../types';
 import { loadSettings, saveSettings } from '../hooks/useSettings';
+
+interface MergeSnapshotTarget {
+  projectName: string;
+  snapshotId: string;
+  snapshotName: string;
+}
 
 interface AppState {
   // Projects
@@ -27,6 +33,8 @@ interface AppState {
   isSetupModalOpen: boolean;
   isCreateProjectModalOpen: boolean;
   isCreateSnapshotModalOpen: boolean;
+  isMergeSnapshotModalOpen: boolean;
+  mergeTargetSnapshot: MergeSnapshotTarget | null;
 
   // Actions
   setProjects: (projects: Project[]) => void;
@@ -43,6 +51,8 @@ interface AppState {
   createSnapshot: (projectName: string, name: string, branch: string) => Promise<{ success: boolean; error?: string }>;
   deleteSnapshot: (projectName: string, snapshotId: string) => Promise<{ success: boolean; error?: string }>;
   setCreateSnapshotModalOpen: (open: boolean) => void;
+  setMergeSnapshotModalOpen: (open: boolean, target?: MergeSnapshotTarget) => void;
+  mergeSnapshot: (projectName: string, snapshotId: string, deleteAfterMerge: boolean, commitMessage?: string) => Promise<MergeResult>;
 
   // Terminal actions
   selectTerminal: (terminalId: string | null) => void;
@@ -94,6 +104,8 @@ export const useStore = create<AppState>((set, get) => ({
   isSetupModalOpen: false,
   isCreateProjectModalOpen: false,
   isCreateSnapshotModalOpen: false,
+  isMergeSnapshotModalOpen: false,
+  mergeTargetSnapshot: null,
 
   // Project actions
   setProjects: (projects) => set({ projects }),
@@ -205,6 +217,33 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setCreateSnapshotModalOpen: (open) => set({ isCreateSnapshotModalOpen: open }),
+
+  setMergeSnapshotModalOpen: (open, target) => set({
+    isMergeSnapshotModalOpen: open,
+    mergeTargetSnapshot: open ? target ?? null : null,
+  }),
+
+  mergeSnapshot: async (projectName, snapshotId, deleteAfterMerge, commitMessage) => {
+    if (!window.envibe) {
+      return { success: false, message: 'API not available', hasConflicts: false, conflictFiles: [] };
+    }
+
+    const result = await window.envibe.mergeSnapshot(projectName, snapshotId, deleteAfterMerge, commitMessage);
+
+    // Refresh projects to reflect any changes (snapshot deletion, etc.)
+    if (result.success) {
+      const projects = await window.envibe.getProjects();
+      set((state) => ({
+        projects,
+        // Clear snapshot selection if it was deleted
+        selectedSnapshotId: deleteAfterMerge && state.selectedSnapshotId === snapshotId
+          ? null
+          : state.selectedSnapshotId,
+      }));
+    }
+
+    return result;
+  },
 
   // Terminal actions
   selectTerminal: (terminalId) => set({

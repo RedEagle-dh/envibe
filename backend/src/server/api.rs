@@ -359,6 +359,7 @@ pub async fn run_server(data_dir: PathBuf, port: u16) -> Result<()> {
         // Snapshot management
         .route("/api/snapshots/create", post(create_snapshot))
         .route("/api/snapshots/delete", post(delete_snapshot))
+        .route("/api/snapshots/merge", post(merge_snapshot))
         // Terminal management
         .route("/api/terminals/create", post(create_terminal))
         .route("/api/terminals/close", post(close_terminal))
@@ -1187,6 +1188,77 @@ struct DeleteSnapshotAction {
     project: String,
     #[serde(rename = "snapshotId")]
     snapshot_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MergeSnapshotAction {
+    project: String,
+    #[serde(rename = "snapshotId")]
+    snapshot_id: String,
+    #[serde(rename = "deleteAfterMerge", default)]
+    delete_after_merge: bool,
+    #[serde(rename = "commitMessage")]
+    commit_message: Option<String>,
+}
+
+async fn merge_snapshot(
+    State(state): State<Arc<ServerState>>,
+    Json(action): Json<MergeSnapshotAction>,
+) -> impl IntoResponse {
+    tracing::info!("Merging snapshot '{}' for project '{}'", action.snapshot_id, action.project);
+
+    // Find the project
+    let projects = state.projects.read().await;
+    let project = match projects.iter().find(|p| p.name == action.project) {
+        Some(p) => p.clone(),
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Project not found" }))).into_response(),
+    };
+    drop(projects);
+
+    // Perform the merge
+    let mut worktree_manager = state.worktree_manager.write().await;
+
+    let merge_options = crate::worktree::MergeOptions {
+        delete_after_merge: action.delete_after_merge,
+        commit_message: action.commit_message,
+    };
+
+    match worktree_manager.merge_snapshot(&action.project, &project.path, &action.snapshot_id, &merge_options) {
+        Ok(result) => {
+            // Save to disk if snapshot was deleted
+            if result.success && action.delete_after_merge {
+                if let Err(e) = worktree_manager.save(&state.data_dir).await {
+                    tracing::error!("Failed to save worktree manager: {}", e);
+                }
+            }
+
+            let status_code = if result.success {
+                StatusCode::OK
+            } else if result.has_conflicts {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+
+            (status_code, Json(serde_json::json!({
+                "success": result.success,
+                "message": result.message,
+                "hasConflicts": result.has_conflicts,
+                "conflictFiles": result.conflict_files,
+                "commitHash": result.commit_hash,
+            }))).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to merge snapshot: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "success": false,
+                "message": format!("{}", e),
+                "hasConflicts": false,
+                "conflictFiles": [],
+                "commitHash": null,
+            }))).into_response()
+        }
+    }
 }
 
 async fn delete_snapshot(

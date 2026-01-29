@@ -20,6 +20,28 @@ pub struct Snapshot {
     pub created_at: String,
 }
 
+/// Result of a merge operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeResult {
+    pub success: bool,
+    pub message: String,
+    #[serde(rename = "hasConflicts")]
+    pub has_conflicts: bool,
+    #[serde(rename = "conflictFiles")]
+    pub conflict_files: Vec<String>,
+    #[serde(rename = "commitHash")]
+    pub commit_hash: Option<String>,
+}
+
+/// Options for merge operation
+#[derive(Debug, Clone, Deserialize)]
+pub struct MergeOptions {
+    #[serde(rename = "deleteAfterMerge")]
+    pub delete_after_merge: bool,
+    #[serde(rename = "commitMessage")]
+    pub commit_message: Option<String>,
+}
+
 /// Manages git worktrees for project snapshots
 #[derive(Debug, Default)]
 pub struct WorktreeManager {
@@ -236,5 +258,209 @@ impl WorktreeManager {
         }
 
         Ok(())
+    }
+
+    /// Check if a worktree has uncommitted changes
+    fn has_uncommitted_changes(path: &PathBuf) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(path)
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("Failed to check git status: {}", err)));
+        }
+
+        let status = String::from_utf8_lossy(&output.stdout);
+        Ok(!status.trim().is_empty())
+    }
+
+    /// Get the current branch name for a worktree
+    fn get_current_branch(path: &PathBuf) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(path)
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Git(format!("Failed to get current branch: {}", err)));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Get files with merge conflicts
+    fn get_conflict_files(path: &PathBuf) -> Vec<String> {
+        let output = Command::new("git")
+            .args(["diff", "--name-only", "--diff-filter=U"])
+            .current_dir(path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Abort an in-progress merge
+    fn abort_merge(path: &PathBuf) -> Result<()> {
+        let output = Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(path)
+            .output()?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Failed to abort merge: {}", err);
+        }
+
+        Ok(())
+    }
+
+    /// Get the commit hash of HEAD
+    fn get_head_commit(path: &PathBuf) -> Option<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(path)
+            .output()
+            .ok()?;
+
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Merge a snapshot branch into the main project branch
+    pub fn merge_snapshot(
+        &mut self,
+        project_name: &str,
+        project_path: &PathBuf,
+        snapshot_id: &str,
+        options: &MergeOptions,
+    ) -> Result<MergeResult> {
+        // Get the snapshot
+        let snapshot = self
+            .get_snapshot(project_name, snapshot_id)
+            .ok_or_else(|| Error::NotFound(format!("Snapshot {} not found", snapshot_id)))?
+            .clone();
+
+        let snapshot_path = PathBuf::from(&snapshot.path);
+
+        // Check for uncommitted changes in main worktree
+        if Self::has_uncommitted_changes(project_path)? {
+            return Ok(MergeResult {
+                success: false,
+                message: "Main worktree has uncommitted changes. Please commit or stash them first.".to_string(),
+                has_conflicts: false,
+                conflict_files: Vec::new(),
+                commit_hash: None,
+            });
+        }
+
+        // Check for uncommitted changes in snapshot worktree
+        if Self::has_uncommitted_changes(&snapshot_path)? {
+            return Ok(MergeResult {
+                success: false,
+                message: "Snapshot has uncommitted changes. Please commit or stash them first.".to_string(),
+                has_conflicts: false,
+                conflict_files: Vec::new(),
+                commit_hash: None,
+            });
+        }
+
+        // Build the merge command
+        let commit_message = options.commit_message.clone().unwrap_or_else(|| {
+            format!("Merge snapshot '{}' into main branch", snapshot.name)
+        });
+
+        tracing::info!(
+            "Merging snapshot '{}' (branch: {}) into main project at {}",
+            snapshot.name,
+            snapshot.branch,
+            project_path.display()
+        );
+
+        // Perform the merge
+        let output = Command::new("git")
+            .args(["merge", &snapshot.branch, "-m", &commit_message])
+            .current_dir(project_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Check if this is a merge conflict
+            if stderr.contains("CONFLICT") || stderr.contains("Automatic merge failed") {
+                let conflict_files = Self::get_conflict_files(project_path);
+
+                // Abort the merge to leave the working directory clean
+                Self::abort_merge(project_path)?;
+
+                return Ok(MergeResult {
+                    success: false,
+                    message: "Merge conflicts detected. Merge has been aborted.".to_string(),
+                    has_conflicts: true,
+                    conflict_files,
+                    commit_hash: None,
+                });
+            }
+
+            // Other merge error
+            return Ok(MergeResult {
+                success: false,
+                message: format!("Merge failed: {}", stderr.trim()),
+                has_conflicts: false,
+                conflict_files: Vec::new(),
+                commit_hash: None,
+            });
+        }
+
+        // Get the new commit hash
+        let commit_hash = Self::get_head_commit(project_path);
+
+        tracing::info!(
+            "Successfully merged snapshot '{}' into main branch (commit: {:?})",
+            snapshot.name,
+            commit_hash
+        );
+
+        // Optionally delete the snapshot after successful merge
+        if options.delete_after_merge {
+            if let Err(e) = self.delete_snapshot(project_name, project_path, snapshot_id) {
+                tracing::warn!("Failed to delete snapshot after merge: {}", e);
+                return Ok(MergeResult {
+                    success: true,
+                    message: format!(
+                        "Merge successful, but failed to delete snapshot: {}",
+                        e
+                    ),
+                    has_conflicts: false,
+                    conflict_files: Vec::new(),
+                    commit_hash,
+                });
+            }
+        }
+
+        Ok(MergeResult {
+            success: true,
+            message: if options.delete_after_merge {
+                format!("Successfully merged and deleted snapshot '{}'", snapshot.name)
+            } else {
+                format!("Successfully merged snapshot '{}'", snapshot.name)
+            },
+            has_conflicts: false,
+            conflict_files: Vec::new(),
+            commit_hash,
+        })
     }
 }

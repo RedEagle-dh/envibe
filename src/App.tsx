@@ -12,6 +12,7 @@ import { SetupModal } from './components/modals/SetupModal';
 import { SettingsModal } from './components/modals/SettingsModal';
 import { CreateProjectModal } from './components/modals/CreateProjectModal';
 import { CreateSnapshotModal } from './components/modals/CreateSnapshotModal';
+import { MergeSnapshotModal } from './components/modals/MergeSnapshotModal';
 import type { Project, LogEntry } from './types';
 
 // Process a single log line and return the log entry (or null for status updates)
@@ -208,6 +209,7 @@ export default function App() {
       <SettingsModal />
       <CreateProjectModal />
       <CreateSnapshotModal />
+      <MergeSnapshotModal />
     </>
   );
 }

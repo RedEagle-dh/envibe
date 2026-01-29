@@ -384,6 +384,26 @@ ipcMain.handle('delete-snapshot', async (_event, projectName: string, snapshotId
   }) ?? { error: 'Failed to delete snapshot' };
 });
 
+ipcMain.handle('merge-snapshot', async (_event, projectName: string, snapshotId: string, deleteAfterMerge: boolean, commitMessage?: string) => {
+  // Merge can return non-200 status codes (400 for uncommitted changes, 409 for conflicts)
+  // but still includes useful error info in the body, so we need custom handling
+  try {
+    const response = await fetch(`${RUST_API_URL}/api/snapshots/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: projectName, snapshotId, deleteAfterMerge, commitMessage }),
+    });
+    const text = await response.text();
+    if (text) {
+      return JSON.parse(text);
+    }
+    return { success: false, message: 'Empty response from server', hasConflicts: false, conflictFiles: [] };
+  } catch (error) {
+    console.error('Merge snapshot failed:', error);
+    return { success: false, message: 'Failed to merge snapshot', hasConflicts: false, conflictFiles: [] };
+  }
+});
+
 // Terminal management
 ipcMain.handle('create-terminal', async (_event, projectName: string, snapshotId?: string, terminalType?: string, agentCommand?: string) => {
   return await apiCall('/api/terminals/create', {

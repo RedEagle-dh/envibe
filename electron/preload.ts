@@ -17,6 +17,14 @@ export interface TerminalSession {
   type: 'shell' | 'agent';
 }
 
+export interface MergeResult {
+  success: boolean;
+  message: string;
+  hasConflicts: boolean;
+  conflictFiles: string[];
+  commitHash?: string;
+}
+
 export interface EnvibeAPI {
   // Projects
   getProjects: () => Promise<Project[]>;
@@ -43,6 +51,7 @@ export interface EnvibeAPI {
   // Snapshot management
   createSnapshot: (projectName: string, name: string, branch: string) => Promise<Snapshot | { error: string }>;
   deleteSnapshot: (projectName: string, snapshotId: string) => Promise<{ status: string } | { error: string }>;
+  mergeSnapshot: (projectName: string, snapshotId: string, deleteAfterMerge: boolean, commitMessage?: string) => Promise<MergeResult>;
 
   // Terminal management
   createTerminal: (projectName: string, snapshotId?: string, terminalType?: 'shell' | 'agent', agentCommand?: string) => Promise<TerminalSession | { error: string }>;
@@ -101,6 +110,7 @@ const api: EnvibeAPI = {
   // Snapshot management
   createSnapshot: (projectName, name, branch) => ipcRenderer.invoke('create-snapshot', projectName, name, branch),
   deleteSnapshot: (projectName, snapshotId) => ipcRenderer.invoke('delete-snapshot', projectName, snapshotId),
+  mergeSnapshot: (projectName, snapshotId, deleteAfterMerge, commitMessage) => ipcRenderer.invoke('merge-snapshot', projectName, snapshotId, deleteAfterMerge, commitMessage),
 
   // Terminal management
   createTerminal: (projectName, snapshotId, terminalType, agentCommand) => ipcRenderer.invoke('create-terminal', projectName, snapshotId, terminalType, agentCommand),

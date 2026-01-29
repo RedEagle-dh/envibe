@@ -65,6 +65,14 @@ export interface EnvVar {
   interpolated?: string;
 }
 
+export interface MergeResult {
+  success: boolean;
+  message: string;
+  hasConflicts: boolean;
+  conflictFiles: string[];
+  commitHash?: string;
+}
+
 export interface EnvibeAPI {
   getProjects: () => Promise<Project[]>;
   getServices: (projectName: string) => Promise<Service[]>;
@@ -82,6 +90,7 @@ export interface EnvibeAPI {
   // Snapshot management
   createSnapshot: (projectName: string, name: string, branch: string) => Promise<Snapshot | { error: string }>;
   deleteSnapshot: (projectName: string, snapshotId: string) => Promise<{ status: string } | { error: string }>;
+  mergeSnapshot: (projectName: string, snapshotId: string, deleteAfterMerge: boolean, commitMessage?: string) => Promise<MergeResult>;
 
   // Terminal management
   createTerminal: (projectName: string, snapshotId?: string, terminalType?: TerminalType, agentCommand?: string) => Promise<TerminalSession | { error: string }>;
