@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, LogEntry, ServiceStatus, AppSettings, AIAgent, Snapshot, TerminalSession, Service, TerminalType, MergeResult } from '../types';
+import type { Project, LogEntry, ServiceStatus, AppSettings, AIAgent, Snapshot, TerminalSession, Service, TerminalType, MergeResult, AgentStatus } from '../types';
 import { loadSettings, saveSettings } from '../hooks/useSettings';
 
 interface MergeSnapshotTarget {
@@ -19,6 +19,10 @@ interface AppState {
   selectedTerminalId: string | null;
   openTerminals: string[];
   expandedProjects: Set<string>;
+
+  // Remember selected terminal per project/snapshot context
+  // Key format: "project:projectName" or "snapshot:snapshotId"
+  lastSelectedTerminalByContext: Record<string, string | null>;
 
   // Logs — stored per service for O(1) lookup (no filtering needed)
   logsByService: Record<string, LogEntry[]>;
@@ -60,6 +64,7 @@ interface AppState {
   closeTerminalTab: (terminalId: string) => void;
   createTerminal: (projectName: string, snapshotId?: string, terminalType?: TerminalType, agentCommand?: string) => Promise<{ success: boolean; terminalId?: string; error?: string }>;
   closeTerminal: (terminalId: string) => Promise<{ success: boolean; error?: string }>;
+  updateTerminalAgentStatus: (terminalId: string, agentStatus: AgentStatus) => void;
 
   addLogs: (entries: LogEntry[]) => void;
   clearLogs: () => void;
@@ -91,6 +96,7 @@ export const useStore = create<AppState>((set, get) => ({
   selectedTerminalId: null,
   openTerminals: [],
   expandedProjects: new Set<string>(),
+  lastSelectedTerminalByContext: {},
   logsByService: {},
   followLogs: true,
   showEnvPanel: false,
@@ -147,11 +153,29 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  selectProject: (projectName) => set({
-    selectedProjectName: projectName,
-    selectedServiceName: null,
-    selectedSnapshotId: null,
-    selectedTerminalId: null,
+  selectProject: (projectName) => set((state) => {
+    // Save current terminal selection to the current context before switching
+    const currentContextKey = state.selectedSnapshotId
+      ? `snapshot:${state.selectedSnapshotId}`
+      : state.selectedProjectName
+        ? `project:${state.selectedProjectName}`
+        : null;
+
+    const updatedContextMap = currentContextKey
+      ? { ...state.lastSelectedTerminalByContext, [currentContextKey]: state.selectedTerminalId }
+      : state.lastSelectedTerminalByContext;
+
+    // Restore terminal selection for the new project context
+    const newContextKey = projectName ? `project:${projectName}` : null;
+    const restoredTerminalId = newContextKey ? (updatedContextMap[newContextKey] ?? null) : null;
+
+    return {
+      selectedProjectName: projectName,
+      selectedServiceName: null,
+      selectedSnapshotId: null,
+      selectedTerminalId: restoredTerminalId,
+      lastSelectedTerminalByContext: updatedContextMap,
+    };
   }),
 
   selectService: (serviceName) => set({
@@ -159,10 +183,28 @@ export const useStore = create<AppState>((set, get) => ({
   }),
 
   // Snapshot actions
-  selectSnapshot: (snapshotId) => set({
-    selectedSnapshotId: snapshotId,
-    selectedServiceName: null,
-    selectedTerminalId: null,
+  selectSnapshot: (snapshotId) => set((state) => {
+    // Save current terminal selection to the current context before switching
+    const currentContextKey = state.selectedSnapshotId
+      ? `snapshot:${state.selectedSnapshotId}`
+      : state.selectedProjectName
+        ? `project:${state.selectedProjectName}`
+        : null;
+
+    const updatedContextMap = currentContextKey
+      ? { ...state.lastSelectedTerminalByContext, [currentContextKey]: state.selectedTerminalId }
+      : state.lastSelectedTerminalByContext;
+
+    // Restore terminal selection for the new snapshot context
+    const newContextKey = snapshotId ? `snapshot:${snapshotId}` : null;
+    const restoredTerminalId = newContextKey ? (updatedContextMap[newContextKey] ?? null) : null;
+
+    return {
+      selectedSnapshotId: snapshotId,
+      selectedServiceName: null,
+      selectedTerminalId: restoredTerminalId,
+      lastSelectedTerminalByContext: updatedContextMap,
+    };
   }),
 
   toggleProjectExpanded: (projectName) => set((state) => {
@@ -245,10 +287,40 @@ export const useStore = create<AppState>((set, get) => ({
     return result;
   },
 
+  // Terminal agent status update
+  updateTerminalAgentStatus: (terminalId, agentStatus) => set((state) => ({
+    projects: state.projects.map((project) => ({
+      ...project,
+      terminals: project.terminals.map((t) =>
+        t.id === terminalId ? { ...t, agentStatus } : t
+      ),
+      snapshots: project.snapshots?.map((snapshot) => ({
+        ...snapshot,
+        terminals: snapshot.terminals.map((t) =>
+          t.id === terminalId ? { ...t, agentStatus } : t
+        ),
+      })) ?? [],
+    })),
+  })),
+
   // Terminal actions
-  selectTerminal: (terminalId) => set({
-    selectedTerminalId: terminalId,
-    selectedServiceName: null,
+  selectTerminal: (terminalId) => set((state) => {
+    // Save terminal selection to the current context
+    const contextKey = state.selectedSnapshotId
+      ? `snapshot:${state.selectedSnapshotId}`
+      : state.selectedProjectName
+        ? `project:${state.selectedProjectName}`
+        : null;
+
+    const updatedContextMap = contextKey
+      ? { ...state.lastSelectedTerminalByContext, [contextKey]: terminalId }
+      : state.lastSelectedTerminalByContext;
+
+    return {
+      selectedTerminalId: terminalId,
+      selectedServiceName: null,
+      lastSelectedTerminalByContext: updatedContextMap,
+    };
   }),
 
   openTerminal: (terminalId) => set((state) => {
@@ -550,4 +622,53 @@ export const useServiceLogs = () => {
   return useStore((s) =>
     selectedService ? (s.logsByService[selectedService] ?? EMPTY_LOGS) : EMPTY_LOGS
   );
+};
+
+// Check agent status for a project (returns 'waiting_input', 'completed', or null)
+export const useProjectAgentStatus = (projectName: string): 'waiting_input' | 'completed' | null => {
+  return useStore((s) => {
+    const project = s.projects.find((p) => p.name === projectName);
+    if (!project) return null;
+
+    // Check project-level terminals
+    const projectTerminals = project.terminals.filter((t) => t.type === 'agent');
+
+    // Check all snapshot terminals
+    const snapshotTerminals = project.snapshots?.flatMap((snap) =>
+      snap.terminals.filter((t) => t.type === 'agent')
+    ) ?? [];
+
+    const allAgentTerminals = [...projectTerminals, ...snapshotTerminals];
+
+    // Priority: waiting_input > completed > null
+    if (allAgentTerminals.some((t) => t.agentStatus === 'waiting_input')) {
+      return 'waiting_input';
+    }
+    if (allAgentTerminals.some((t) => t.agentStatus === 'completed')) {
+      return 'completed';
+    }
+    return null;
+  });
+};
+
+// Check agent status for a specific snapshot (returns 'waiting_input', 'completed', or null)
+export const useSnapshotAgentStatus = (projectName: string, snapshotId: string): 'waiting_input' | 'completed' | null => {
+  return useStore((s) => {
+    const project = s.projects.find((p) => p.name === projectName);
+    if (!project) return null;
+
+    const snapshot = project.snapshots?.find((snap) => snap.id === snapshotId);
+    if (!snapshot) return null;
+
+    const agentTerminals = snapshot.terminals.filter((t) => t.type === 'agent');
+
+    // Priority: waiting_input > completed > null
+    if (agentTerminals.some((t) => t.agentStatus === 'waiting_input')) {
+      return 'waiting_input';
+    }
+    if (agentTerminals.some((t) => t.agentStatus === 'completed')) {
+      return 'completed';
+    }
+    return null;
+  });
 };

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { FolderGit2, Package, Plus, X, FolderPlus, FolderOpen, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
-import { useStore, useProjectExpanded } from '../stores/useStore';
+import { useStore, useProjectExpanded, useProjectAgentStatus } from '../stores/useStore';
 import { SnapshotItem } from './SnapshotItem';
 import type { Project } from '../types';
 
@@ -143,6 +143,8 @@ function ProjectItem({ project, selected, selectedSnapshotId, onSelectProject, o
   const setCreateSnapshotModalOpen = useStore((s) => s.setCreateSnapshotModalOpen);
   const selectProject = useStore((s) => s.selectProject);
   const isExpanded = useProjectExpanded(project.name);
+  const agentStatus = useProjectAgentStatus(project.name);
+  const needsAgentAttention = agentStatus === 'waiting_input' || agentStatus === 'completed';
 
   const snapshots = project.snapshots ?? [];
   const hasSnapshots = snapshots.length > 0;
@@ -180,7 +182,7 @@ function ProjectItem({ project, selected, selectedSnapshotId, onSelectProject, o
   return (
     <>
       <li
-        className={`list-item group ${selected ? 'selected' : ''}`}
+        className={`list-item group ${selected ? 'selected' : ''} ${needsAgentAttention ? 'agent-attention' : ''}`}
         onClick={handleProjectClick}
       >
         <div className="flex items-start gap-2">

@@ -3,6 +3,7 @@ export type ServiceType = 'docker' | 'process' | 'compose';
 export type AIAgent = 'claude-code' | 'codex';
 export type TerminalStatus = 'connected' | 'disconnected';
 export type TerminalType = 'shell' | 'agent';
+export type AgentStatus = 'idle' | 'busy' | 'waiting_input' | 'completed';
 
 export interface AppSettings {
   isFirstTimeSetupComplete: boolean;
@@ -27,6 +28,7 @@ export interface TerminalSession {
   name: string;
   status: TerminalStatus;
   type: TerminalType;
+  agentStatus?: AgentStatus;
 }
 
 export interface Snapshot {

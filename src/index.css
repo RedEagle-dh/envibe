@@ -98,6 +98,41 @@ html, body, #root {
   @apply bg-envibe-bg-tertiary border-l-2 border-l-envibe-accent;
 }
 
+/* Agent needs attention (BEL or idle) - pulsing amber/yellow highlight */
+.list-item.agent-attention {
+  animation: agent-attention-pulse 1.5s ease-in-out infinite !important;
+  border-left: 2px solid rgba(210, 153, 34, 0.9) !important;
+  transition: none !important;
+}
+
+@keyframes agent-attention-pulse {
+  0%, 100% {
+    background-color: rgba(210, 153, 34, 0.08);
+    border-left-color: rgba(210, 153, 34, 0.5);
+  }
+  50% {
+    background-color: rgba(210, 153, 34, 0.2);
+    border-left-color: #d29922;
+  }
+}
+
+.list-item.agent-attention.selected {
+  animation: agent-attention-pulse-selected 1.5s ease-in-out infinite !important;
+  transition: none !important;
+}
+
+@keyframes agent-attention-pulse-selected {
+  0%, 100% {
+    background-color: rgba(210, 153, 34, 0.12);
+    border-left-color: rgba(210, 153, 34, 0.6);
+  }
+  50% {
+    background-color: rgba(210, 153, 34, 0.25);
+    border-left-color: #d29922;
+  }
+}
+
+
 /* Button styles */
 .btn {
   @apply px-3 py-1.5 rounded-md text-sm font-medium transition-colors;

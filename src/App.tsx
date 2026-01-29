@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore, useSelectedProject, useSelectedService, useSelectedSnapshot, useContextTerminals, createLogEntry, parseLogLine } from './stores/useStore';
+import { useAgentMonitor } from './hooks/useAgentMonitor';
 import { Sidebar } from './components/Sidebar';
 import { ProjectsPanel } from './components/ProjectsPanel';
 import { ServicesPanel } from './components/ServicesPanel';
@@ -74,6 +75,9 @@ export default function App() {
     ? contextTerminals.find((t) => t.id === selectedTerminalId)
     : null;
   const isTerminalSelected = selectedTerminal && openTerminals.includes(selectedTerminal.id);
+
+  // Background monitor for all agent terminals (detects BEL even when not viewing)
+  const { clearWaitingStatus } = useAgentMonitor();
 
   // Initialize settings on mount (before project fetch)
   useEffect(() => {
@@ -151,31 +155,45 @@ export default function App() {
     }
   }, [setProjects, addLogs, updateServiceStatus]);
 
-  // Determine what to show in the main content area
-  const renderMainContent = () => {
-    // Show terminal if one is selected
-    if (isTerminalSelected && selectedProject && selectedTerminal) {
-      if (selectedTerminal.status === 'connected') {
-        return (
-          <UnifiedTerminal
-            projectName={selectedProject.name}
-            terminalId={selectedTerminal.id}
-            terminalName={selectedTerminal.name}
-            terminalType={selectedTerminal.type}
-            snapshotId={selectedSnapshotId ?? undefined}
-          />
-        );
-      } else {
-        return (
-          <TerminalDisconnected
-            terminalName={selectedTerminal.name}
-            terminalType={selectedTerminal.type}
-          />
-        );
-      }
-    }
+  // Get all open terminals that belong to the current context (project/snapshot)
+  const openContextTerminals = contextTerminals.filter((t) => openTerminals.includes(t.id));
 
-    return <LogViewer />;
+  // Determine what to show in the main content area
+  // We render all open terminals but hide the non-selected ones to preserve their buffer
+  const renderMainContent = () => {
+    return (
+      <>
+        {/* LogViewer - shown when no terminal is selected */}
+        <div className={`h-full ${isTerminalSelected ? 'hidden' : ''}`}>
+          <LogViewer />
+        </div>
+
+        {/* Render all open terminals, hiding non-selected ones */}
+        {selectedProject && openContextTerminals.map((terminal) => {
+          const isSelected = terminal.id === selectedTerminalId;
+          return (
+            <div key={terminal.id} className={`h-full ${isSelected ? '' : 'hidden'}`}>
+              {terminal.status === 'connected' ? (
+                <UnifiedTerminal
+                  projectName={selectedProject.name}
+                  terminalId={terminal.id}
+                  terminalName={terminal.name}
+                  terminalType={terminal.type}
+                  snapshotId={selectedSnapshotId ?? undefined}
+                  isSelected={isSelected}
+                  onUserInput={terminal.type === 'agent' ? () => clearWaitingStatus(terminal.id) : undefined}
+                />
+              ) : (
+                <TerminalDisconnected
+                  terminalName={terminal.name}
+                  terminalType={terminal.type}
+                />
+              )}
+            </div>
+          );
+        })}
+      </>
+    );
   };
 
   return (

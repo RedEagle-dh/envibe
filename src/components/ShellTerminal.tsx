@@ -10,12 +10,23 @@ interface UnifiedTerminalProps {
   terminalName: string;
   terminalType: TerminalType;
   snapshotId?: string;
+  isSelected?: boolean;
+  onUserInput?: () => void; // Called when user types - used to clear waiting status
 }
 
-export function UnifiedTerminal({ projectName, terminalId, terminalName, terminalType, snapshotId }: UnifiedTerminalProps) {
+export function UnifiedTerminal({ projectName, terminalId, terminalName, terminalType, snapshotId, isSelected = true, onUserInput }: UnifiedTerminalProps) {
   const Icon = terminalType === 'agent' ? Bot : TerminalIcon;
   const label = terminalType === 'agent' ? 'agent' : 'shell';
   const terminalRef = useRef<HTMLDivElement>(null);
+  const termInstanceRef = useRef<Terminal | null>(null);
+
+  // Focus terminal when it becomes selected
+  useEffect(() => {
+    if (isSelected && termInstanceRef.current) {
+      termInstanceRef.current.focus();
+    }
+  }, [isSelected]);
+
 
   useEffect(() => {
     if (!terminalRef.current) return;
@@ -57,13 +68,24 @@ export function UnifiedTerminal({ projectName, terminalId, terminalName, termina
     term.loadAddon(fit);
     term.open(terminalRef.current);
 
+    // Store ref for focus management
+    termInstanceRef.current = term;
+
     requestAnimationFrame(() => {
-      if (!cancelled) fit.fit();
+      if (!cancelled) {
+        fit.fit();
+        // Auto-focus terminal so user can type immediately
+        term.focus();
+      }
     });
 
     term.onData((data) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
+        // When user sends input, clear the waiting status
+        if (onUserInput) {
+          onUserInput();
+        }
       }
     });
 
@@ -83,7 +105,8 @@ export function UnifiedTerminal({ projectName, terminalId, terminalName, termina
     const connect = async () => {
       if (cancelled) return;
 
-      let wsUrl = 'ws://127.0.0.1:3847';
+      // Default fallback - actual URL comes from backend via IPC
+      let wsUrl = 'ws://127.0.0.1:3848';
       try {
         if (window.envibe) {
           const baseUrl = await window.envibe.getBackendUrl();
@@ -142,9 +165,10 @@ export function UnifiedTerminal({ projectName, terminalId, terminalName, termina
         ws.close();
         ws = null;
       }
+      termInstanceRef.current = null;
       term.dispose();
     };
-  }, [projectName, terminalId, snapshotId]);
+  }, [projectName, terminalId, snapshotId, onUserInput]);
 
   return (
     <div className="panel h-full flex flex-col">

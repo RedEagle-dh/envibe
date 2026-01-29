@@ -8,7 +8,8 @@ let mainWindow: BrowserWindow | null = null;
 let rustProcess: ChildProcess | null = null;
 
 const isDev = !app.isPackaged;
-const RUST_API_PORT = 3847;
+// Use different ports for dev (3848) vs production (3847) to allow side-by-side testing
+const RUST_API_PORT = isDev ? 3848 : 3847;
 const RUST_API_URL = `http://127.0.0.1:${RUST_API_PORT}`;
 
 function getRustBinaryPath(): string {
@@ -176,7 +177,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://localhost:5174'); // Dev port
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));

@@ -1,5 +1,5 @@
 import { GitBranch, GitMerge, Trash2 } from 'lucide-react';
-import { useStore } from '../stores/useStore';
+import { useStore, useSnapshotAgentStatus } from '../stores/useStore';
 import type { Snapshot } from '../types';
 
 interface SnapshotItemProps {
@@ -12,6 +12,8 @@ interface SnapshotItemProps {
 export function SnapshotItem({ snapshot, projectName, selected, onClick }: SnapshotItemProps) {
   const deleteSnapshot = useStore((s) => s.deleteSnapshot);
   const setMergeSnapshotModalOpen = useStore((s) => s.setMergeSnapshotModalOpen);
+  const agentStatus = useSnapshotAgentStatus(projectName, snapshot.id);
+  const needsAgentAttention = agentStatus === 'waiting_input' || agentStatus === 'completed';
   const runningServices = snapshot.services.filter((s) => s.status === 'running').length;
   const totalServices = snapshot.services.length;
   const hasRunning = runningServices > 0;
@@ -32,7 +34,7 @@ export function SnapshotItem({ snapshot, projectName, selected, onClick }: Snaps
 
   return (
     <li
-      className={`list-item group pl-8 ${selected ? 'selected' : ''}`}
+      className={`list-item group pl-8 ${selected ? 'selected' : ''} ${needsAgentAttention ? 'agent-attention' : ''}`}
       onClick={onClick}
     >
       <div className="flex items-start gap-3">
