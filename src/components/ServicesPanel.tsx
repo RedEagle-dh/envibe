@@ -1,42 +1,62 @@
-import { useState, useEffect } from 'react';
-import { Play, Square, RotateCw, Layers, Database, Server, Terminal as TerminalIcon, Bot, Edit2, Check, X } from 'lucide-react';
-import { useStore, useSelectedProject } from '../stores/useStore';
+import { useState, useEffect, useRef } from 'react';
+import { Play, Square, RotateCw, Layers, Database, Server, Terminal as TerminalIcon, Bot, Edit2, Check, X, Plus, ChevronDown } from 'lucide-react';
+import { useStore, useSelectedProject, useSelectedSnapshot, useContextServices } from '../stores/useStore';
 import type { Service, ServiceStatus } from '../types';
 
-type ServiceTab = 'processes' | 'docker' | 'agents';
+type ServiceTab = 'processes' | 'docker';
 
 export function ServicesPanel() {
   const selectedProject = useSelectedProject();
+  const selectedSnapshot = useSelectedSnapshot();
   const selectedServiceName = useStore((s) => s.selectedServiceName);
   const selectService = useStore((s) => s.selectService);
+  const createTerminal = useStore((s) => s.createTerminal);
+  const selectedSnapshotId = useStore((s) => s.selectedSnapshotId);
   const [activeTab, setActiveTab] = useState<ServiceTab>('processes');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const processServices = selectedProject?.services.filter((s) => s.type === 'process') ?? [];
-  const dockerServices = selectedProject?.services.filter((s) => s.type === 'docker' || s.type === 'compose') ?? [];
-  const agentServices = selectedProject?.services.filter((s) => s.type === 'agent') ?? [];
+  // Use context-aware services (from snapshot if selected, otherwise from project)
+  const contextServices = useContextServices();
+
+  const processServices = contextServices.filter((s) => s.type === 'process');
+  const dockerServices = contextServices.filter((s) => s.type === 'docker' || s.type === 'compose');
   const filteredServices = activeTab === 'processes'
     ? processServices
-    : activeTab === 'docker'
-      ? dockerServices
-      : agentServices;
+    : dockerServices;
 
-  // Auto-select tab that has services when project changes
+  // Auto-select tab that has services when project/snapshot changes
   useEffect(() => {
-    if (selectedProject) {
-      const hasProcesses = selectedProject.services.some((s) => s.type === 'process');
-      const hasDocker = selectedProject.services.some((s) => s.type === 'docker' || s.type === 'compose');
-      const hasAgents = selectedProject.services.some((s) => s.type === 'agent');
+    if (contextServices.length > 0) {
+      const hasProcesses = contextServices.some((s) => s.type === 'process');
+      const hasDocker = contextServices.some((s) => s.type === 'docker' || s.type === 'compose');
       if (hasProcesses) {
         setActiveTab('processes');
       } else if (hasDocker) {
         setActiveTab('docker');
-      } else if (hasAgents) {
-        setActiveTab('agents');
       } else {
         setActiveTab('processes');
       }
     }
-  }, [selectedProject?.name]);
+  }, [selectedProject?.name, selectedSnapshotId, contextServices.length]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleNewTerminal = async (terminalType: 'shell' | 'agent', agentCommand?: string) => {
+    setShowDropdown(false);
+    if (selectedProject) {
+      await createTerminal(selectedProject.name, selectedSnapshotId ?? undefined, terminalType, agentCommand);
+    }
+  };
 
   if (!selectedProject) {
     return (
@@ -57,18 +77,63 @@ export function ServicesPanel() {
     );
   }
 
+  const contextLabel = selectedSnapshot ? selectedSnapshot.name : selectedProject.name;
+  const runningCount = contextServices.filter((s) => s.status === 'running').length;
+
   return (
     <div className="panel h-full flex flex-col">
       <div className="flex flex-col border-b border-envibe-border">
         <div className="flex items-center justify-between px-4 py-3">
-          <span className="panel-title flex items-center gap-2">
-            <Layers size={16} className="text-envibe-accent" />
-            {selectedProject.name}
-          </span>
-          <span className="text-xs text-envibe-text-subtle">
-            {selectedProject.services.filter((s) => s.status === 'running').length}/
-            {selectedProject.services.length} running
-          </span>
+          <div className="flex items-center gap-2 min-w-0">
+            <Layers size={16} className="text-envibe-accent flex-shrink-0" />
+            <span className="panel-title truncate">{contextLabel}</span>
+            {selectedSnapshot && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-envibe-accent/20 text-envibe-accent flex-shrink-0">
+                snapshot
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-xs text-envibe-text-subtle">
+              {runningCount}/{contextServices.length} running
+            </span>
+            <div className="relative" ref={dropdownRef}>
+              <button
+                onClick={() => setShowDropdown(!showDropdown)}
+                className="flex items-center gap-0.5 p-1 rounded text-envibe-text-muted hover:text-envibe-accent hover:bg-envibe-accent/20 transition-colors"
+                title="New terminal or agent"
+              >
+                <Plus size={14} />
+                <ChevronDown size={10} />
+              </button>
+              {showDropdown && (
+                <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] bg-envibe-bg-secondary border border-envibe-border rounded-md shadow-lg py-1">
+                  <button
+                    onClick={() => handleNewTerminal('shell')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-envibe-text hover:bg-envibe-bg-tertiary transition-colors"
+                  >
+                    <TerminalIcon size={14} />
+                    Terminal
+                  </button>
+                  <div className="border-t border-envibe-border my-1" />
+                  <button
+                    onClick={() => handleNewTerminal('agent', 'claude')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-envibe-text hover:bg-envibe-bg-tertiary transition-colors"
+                  >
+                    <Bot size={14} />
+                    Claude
+                  </button>
+                  <button
+                    onClick={() => handleNewTerminal('agent', 'codex')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-envibe-text hover:bg-envibe-bg-tertiary transition-colors"
+                  >
+                    <Bot size={14} />
+                    Codex
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         <div className="flex border-t border-envibe-border">
           <button
@@ -93,24 +158,13 @@ export function ServicesPanel() {
             Docker
             <span className="ml-1.5 text-envibe-text-subtle">{dockerServices.length}</span>
           </button>
-          <button
-            className={`flex-1 px-4 py-2 text-xs font-medium transition-colors ${
-              activeTab === 'agents'
-                ? 'text-envibe-accent border-b-2 border-envibe-accent bg-envibe-bg-tertiary/50'
-                : 'text-envibe-text-muted hover:text-envibe-text'
-            }`}
-            onClick={() => setActiveTab('agents')}
-          >
-            Agents
-            <span className="ml-1.5 text-envibe-text-subtle">{agentServices.length}</span>
-          </button>
         </div>
       </div>
       <div className="panel-content flex-1 overflow-y-auto">
         {filteredServices.length === 0 ? (
           <div className="p-4 text-center text-envibe-text-muted">
             <p className="text-sm">
-              No {activeTab === 'processes' ? 'process' : activeTab === 'docker' ? 'Docker' : 'agent'} services
+              No {activeTab === 'processes' ? 'process' : 'Docker'} services
             </p>
           </div>
         ) : (
@@ -368,8 +422,6 @@ function getTypeIcon(type: Service['type']) {
       return Database;
     case 'process':
       return TerminalIcon;
-    case 'agent':
-      return Bot;
     default:
       return Server;
   }

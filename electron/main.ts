@@ -309,3 +309,94 @@ ipcMain.handle('remove-project', async (_event, projectPath: string) => {
     body: JSON.stringify({ path: projectPath }),
   });
 });
+
+ipcMain.handle('select-directory', async (_event, title?: string) => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: title ?? 'Select Directory',
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('create-project', async (_event, parentPath: string, projectName: string, agents: string[]) => {
+  // Validate inputs
+  if (!parentPath || !projectName) {
+    return { error: 'Parent path and project name are required' };
+  }
+
+  // Sanitize project name (remove invalid chars for filesystem)
+  const safeName = projectName.replace(/[<>:"/\\|?*]/g, '-').trim();
+  if (!safeName) {
+    return { error: 'Invalid project name' };
+  }
+
+  const projectPath = path.join(parentPath, safeName);
+
+  // Check if directory already exists
+  if (fs.existsSync(projectPath)) {
+    return { error: 'A folder with this name already exists' };
+  }
+
+  try {
+    // Create the project directory
+    fs.mkdirSync(projectPath, { recursive: true });
+
+    // Build the .envibe.yaml content (agents parameter is now ignored - agents are created on-demand)
+    const yamlContent = `name: ${safeName}\n\nservices: {}\n`;
+
+    // Write the .envibe.yaml file
+    fs.writeFileSync(path.join(projectPath, '.envibe.yaml'), yamlContent, 'utf-8');
+
+    // Add the project to the registry via API
+    const addResult = await apiCall('/api/projects/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: projectPath }),
+    });
+
+    if (!addResult) {
+      return { error: 'Failed to add project to registry' };
+    }
+
+    return { status: 'created', path: projectPath };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return { error: `Failed to create project: ${message}` };
+  }
+});
+
+// Snapshot management
+ipcMain.handle('create-snapshot', async (_event, projectName: string, name: string, branch: string) => {
+  return await apiCall('/api/snapshots/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: projectName, name, branch }),
+  }) ?? { error: 'Failed to create snapshot' };
+});
+
+ipcMain.handle('delete-snapshot', async (_event, projectName: string, snapshotId: string) => {
+  return await apiCall('/api/snapshots/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: projectName, snapshotId }),
+  }) ?? { error: 'Failed to delete snapshot' };
+});
+
+// Terminal management
+ipcMain.handle('create-terminal', async (_event, projectName: string, snapshotId?: string, terminalType?: string, agentCommand?: string) => {
+  return await apiCall('/api/terminals/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project: projectName, snapshotId, terminalType, agentCommand }),
+  }) ?? { error: 'Failed to create terminal' };
+});
+
+ipcMain.handle('close-terminal', async (_event, terminalId: string) => {
+  return await apiCall('/api/terminals/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ terminalId }),
+  }) ?? { error: 'Failed to close terminal' };
+});

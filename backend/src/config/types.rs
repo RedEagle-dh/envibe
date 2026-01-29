@@ -10,9 +10,6 @@ pub struct ProjectConfig {
     pub env_file: Option<String>,
     #[serde(default)]
     pub services: HashMap<String, ServiceConfig>,
-    /// Agent definitions (merged into services as ServiceConfig::Agent during loading)
-    #[serde(default)]
-    pub agents: HashMap<String, AgentServiceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,8 +20,6 @@ pub enum ServiceConfig {
     /// Docker compose service (externally managed, read-only)
     #[serde(rename = "compose")]
     Compose(ComposeServiceConfig),
-    /// Interactive coding agent (Claude Code, Codex CLI, etc.)
-    Agent(AgentServiceConfig),
 }
 
 /// Configuration for a docker compose managed service (externally managed)
@@ -78,23 +73,6 @@ pub struct ProcessServiceConfig {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentServiceConfig {
-    /// Agent provider: "claude-code" or "codex"
-    pub provider: String,
-    /// CLI command to run (e.g. "claude", "codex")
-    pub command: String,
-    /// Additional CLI arguments
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Working directory (defaults to project dir)
-    #[serde(default = "default_working_dir")]
-    pub working_dir: String,
-    /// Environment variables
-    #[serde(default)]
-    pub env: HashMap<String, String>,
 }
 
 fn default_working_dir() -> String {

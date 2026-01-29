@@ -54,9 +54,11 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<ServerState>) {
         let projects = state.projects.read().await;
         let app_state = state.state.read().await;
         let port_registry = state.port_registry.read().await;
+        let worktree_manager = state.worktree_manager.read().await;
+        let terminal_sessions = state.terminal_sessions.read().await;
         let infos: Vec<ProjectInfo> = projects
             .iter()
-            .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry))
+            .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry, &worktree_manager, &terminal_sessions))
             .collect();
         let _ = tx.send(WsMessage::ProjectsUpdate {
             projects: infos,
@@ -94,68 +96,70 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<ServerState>) {
     send_task.abort();
 }
 
-/// WebSocket handler for interactive agent terminal I/O.
-/// Bridges bidirectional data between the xterm.js frontend and the PTY backend.
-pub async fn ws_terminal_handler(
+/// WebSocket handler for shell/agent terminal I/O.
+/// Bridges bidirectional data between the xterm.js frontend and the shell PTY.
+pub async fn ws_shell_handler(
     socket: WebSocket,
     state: Arc<ServerState>,
-    project: String,
-    service: String,
+    _project: String,
+    terminal_id: String,
 ) {
-    let key = format!("{}:{}", project, service);
-    info!("Terminal WebSocket connected for {}", key);
+    info!("Shell WebSocket connected for terminal {}", terminal_id);
 
-    // Get history and subscribe to live updates atomically (single lock)
+    // Check if terminal exists first (quick check, drop guard immediately)
+    let exists = {
+        let terminal_manager = state.terminal_manager.lock().unwrap();
+        terminal_manager.is_running(&terminal_id)
+    };
+
+    if !exists {
+        error!("Terminal {} not found or not running", terminal_id);
+        let (mut sender, _) = socket.split();
+        let _ = sender.send(Message::Text(
+            format!("\r\nTerminal '{}' not found. Create it first.\r\n", terminal_id).into()
+        )).await;
+        let _ = sender.close().await;
+        return;
+    }
+
+    // Now get history and subscribe (terminal exists, so these won't fail)
     let (output_rx, history) = {
-        let agent_manager = state.agent_manager.read().await;
-        let rx = match agent_manager.subscribe(&key) {
-            Some(rx) => rx,
-            None => {
-                error!("Agent {} is not running, cannot connect terminal", key);
-                let (mut sender, _) = socket.split();
-                let _ = sender.send(Message::Text(
-                    format!("\r\nAgent '{}' is not running. Start it first.\r\n", service).into()
-                )).await;
-                let _ = sender.close().await;
-                return;
-            }
-        };
-        let history = agent_manager.get_output_history(&key).unwrap_or_default();
+        let terminal_manager = state.terminal_manager.lock().unwrap();
+        let rx = terminal_manager.subscribe(&terminal_id).unwrap();
+        let history = terminal_manager.get_output_history(&terminal_id).unwrap_or_default();
         (rx, history)
     };
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    // Send buffered history first so the client sees everything from before connection
+    // Send buffered history first
     if !history.is_empty() {
-        debug!("Sending {} bytes of output history for {}", history.len(), key);
+        debug!("Sending {} bytes of output history for terminal {}", history.len(), terminal_id);
         if ws_sender.send(Message::Binary(history.into())).await.is_err() {
-            debug!("Failed to send history for {}, aborting", key);
+            debug!("Failed to send history for terminal {}, aborting", terminal_id);
             return;
         }
     }
 
-    // Sender task: forward live PTY output → WebSocket
-    let key_for_sender = key.clone();
+    // Sender task: forward PTY output → WebSocket
+    let terminal_id_for_sender = terminal_id.clone();
     let sender_task = tokio::spawn(async move {
         let mut rx = output_rx;
         loop {
             match rx.recv().await {
                 Ok(data) => {
                     if ws_sender.send(Message::Binary(data.into())).await.is_err() {
-                        debug!("WebSocket send failed for {}, closing sender", key_for_sender);
+                        debug!("WebSocket send failed for terminal {}, closing sender", terminal_id_for_sender);
                         break;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    debug!("Terminal output lagged by {} messages for {}", n, key_for_sender);
-                    // Continue receiving — just lost some output
+                    debug!("Terminal output lagged by {} messages for {}", n, terminal_id_for_sender);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    debug!("Agent output channel closed for {}", key_for_sender);
-                    // Send a final message indicating the agent has exited
+                    debug!("Terminal output channel closed for {}", terminal_id_for_sender);
                     let _ = ws_sender.send(Message::Text(
-                        "\r\n[Agent process exited]\r\n".into()
+                        "\r\n[Terminal closed]\r\n".into()
                     )).await;
                     break;
                 }
@@ -165,7 +169,7 @@ pub async fn ws_terminal_handler(
 
     // Receiver task: forward WebSocket input → PTY
     let state_for_receiver = state.clone();
-    let key_for_receiver = key.clone();
+    let terminal_id_for_receiver = terminal_id.clone();
     let receiver_task = tokio::spawn(async move {
         while let Some(result) = ws_receiver.next().await {
             match result {
@@ -174,35 +178,34 @@ pub async fn ws_terminal_handler(
                     if let Ok(control) = serde_json::from_str::<TerminalControl>(&text) {
                         if control.msg_type == "resize" {
                             if let (Some(cols), Some(rows)) = (control.cols, control.rows) {
-                                let agent_manager = state_for_receiver.agent_manager.read().await;
-                                if let Err(e) = agent_manager.resize_agent(&key_for_receiver, cols, rows) {
-                                    debug!("Failed to resize agent {}: {}", key_for_receiver, e);
+                                let terminal_manager = state_for_receiver.terminal_manager.lock().unwrap();
+                                if let Err(e) = terminal_manager.resize_terminal(&terminal_id_for_receiver, cols, rows) {
+                                    debug!("Failed to resize terminal {}: {}", terminal_id_for_receiver, e);
                                 }
                             }
                         }
                     } else {
                         // Regular text input — send to PTY
-                        let agent_manager = state_for_receiver.agent_manager.read().await;
-                        if let Err(e) = agent_manager.write_to_agent(&key_for_receiver, text.as_bytes()) {
-                            debug!("Failed to write to agent {}: {}", key_for_receiver, e);
+                        let terminal_manager = state_for_receiver.terminal_manager.lock().unwrap();
+                        if let Err(e) = terminal_manager.write_to_terminal(&terminal_id_for_receiver, text.as_bytes()) {
+                            debug!("Failed to write to terminal {}: {}", terminal_id_for_receiver, e);
                             break;
                         }
                     }
                 }
                 Ok(Message::Binary(data)) => {
-                    // Binary data — send directly to PTY
-                    let agent_manager = state_for_receiver.agent_manager.read().await;
-                    if let Err(e) = agent_manager.write_to_agent(&key_for_receiver, &data) {
-                        debug!("Failed to write binary to agent {}: {}", key_for_receiver, e);
+                    let terminal_manager = state_for_receiver.terminal_manager.lock().unwrap();
+                    if let Err(e) = terminal_manager.write_to_terminal(&terminal_id_for_receiver, &data) {
+                        debug!("Failed to write binary to terminal {}: {}", terminal_id_for_receiver, e);
                         break;
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    info!("Terminal WebSocket closed for {}", key_for_receiver);
+                    info!("Shell WebSocket closed for terminal {}", terminal_id_for_receiver);
                     break;
                 }
                 Err(e) => {
-                    debug!("Terminal WebSocket error for {}: {}", key_for_receiver, e);
+                    debug!("Shell WebSocket error for terminal {}: {}", terminal_id_for_receiver, e);
                     break;
                 }
                 _ => {}
@@ -213,12 +216,12 @@ pub async fn ws_terminal_handler(
     // Wait for either task to finish
     tokio::select! {
         _ = sender_task => {
-            debug!("Sender task finished for {}", key);
+            debug!("Sender task finished for terminal {}", terminal_id);
         }
         _ = receiver_task => {
-            debug!("Receiver task finished for {}", key);
+            debug!("Receiver task finished for terminal {}", terminal_id);
         }
     }
 
-    info!("Terminal WebSocket disconnected for {} (agent keeps running)", key);
+    info!("Shell WebSocket disconnected for terminal {} (shell keeps running)", terminal_id);
 }

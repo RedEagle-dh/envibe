@@ -1,6 +1,10 @@
 import { Settings, HelpCircle, RefreshCw } from 'lucide-react';
+import { useStore } from '../stores/useStore';
 
 export function Header() {
+  const setSettingsModalOpen = useStore((s) => s.setSettingsModalOpen);
+  const refreshProjects = useStore((s) => s.refreshProjects);
+
   return (
     <header className="h-12 bg-envibe-bg-secondary border-b border-envibe-border flex items-center px-4 drag-region">
       {/* Spacer for macOS traffic lights */}
@@ -17,13 +21,13 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-1 no-drag">
-        <button className="icon-btn" title="Refresh projects">
+        <button className="icon-btn" title="Refresh projects" onClick={refreshProjects}>
           <RefreshCw size={16} />
         </button>
         <button className="icon-btn" title="Help">
           <HelpCircle size={16} />
         </button>
-        <button className="icon-btn" title="Settings">
+        <button className="icon-btn" title="Settings" onClick={() => setSettingsModalOpen(true)}>
           <Settings size={16} />
         </button>
       </div>

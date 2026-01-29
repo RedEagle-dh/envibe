@@ -89,7 +89,6 @@ impl StatefulWidget for ServicesPanel<'_> {
                     ServiceConfig::Docker(_) => "🐳",
                     ServiceConfig::Process(_) => "⚡",
                     ServiceConfig::Compose(_) => "🐋",
-                    ServiceConfig::Agent(_) => "🤖",
                 };
 
                 let port_str = port.map(|p| format!(" ({})", p)).unwrap_or_default();

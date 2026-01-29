@@ -37,6 +37,15 @@ pub enum EnvibeError {
 
     #[error("Variable interpolation error: {0}")]
     Interpolation(String),
+
+    #[error("Git error: {0}")]
+    Git(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
 }
+
+// Alias for convenience
+pub use EnvibeError as Error;
 
 pub type Result<T> = std::result::Result<T, EnvibeError>;

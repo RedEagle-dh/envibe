@@ -1,21 +1,25 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { Bot, Unplug } from 'lucide-react';
+import { Terminal as TerminalIcon, Bot, Unplug } from 'lucide-react';
+import type { TerminalType } from '../types';
 
-interface AgentTerminalProps {
+interface UnifiedTerminalProps {
   projectName: string;
-  serviceName: string;
+  terminalId: string;
+  terminalName: string;
+  terminalType: TerminalType;
+  snapshotId?: string;
 }
 
-export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) {
+export function UnifiedTerminal({ projectName, terminalId, terminalName, terminalType, snapshotId }: UnifiedTerminalProps) {
+  const Icon = terminalType === 'agent' ? Bot : TerminalIcon;
+  const label = terminalType === 'agent' ? 'agent' : 'shell';
   const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!terminalRef.current) return;
 
-    // Cancellation flag — prevents stale async operations from writing to the
-    // terminal after cleanup (critical for React StrictMode double-mount).
     let cancelled = false;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -53,26 +57,22 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
     term.loadAddon(fit);
     term.open(terminalRef.current);
 
-    // Fit after a small delay to ensure DOM is ready
     requestAnimationFrame(() => {
       if (!cancelled) fit.fit();
     });
 
-    // Forward user input to WebSocket
     term.onData((data) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
-    // Forward resize events to backend
     term.onResize(({ cols, rows }) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }));
       }
     });
 
-    // ResizeObserver to re-fit terminal
     const observer = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         if (!cancelled) fit.fit();
@@ -80,11 +80,10 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
     });
     observer.observe(terminalRef.current);
 
-    // WebSocket connection
     const connect = async () => {
       if (cancelled) return;
 
-      let wsUrl = 'ws://127.0.0.1:3847'; // fallback
+      let wsUrl = 'ws://127.0.0.1:3847';
       try {
         if (window.envibe) {
           const baseUrl = await window.envibe.getBackendUrl();
@@ -96,14 +95,20 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
 
       if (cancelled) return;
 
-      const url = `${wsUrl}/ws/terminal/${encodeURIComponent(projectName)}/${encodeURIComponent(serviceName)}`;
+      // Build the WebSocket URL based on whether we have a snapshot
+      let url: string;
+      if (snapshotId) {
+        url = `${wsUrl}/ws/shell/${encodeURIComponent(projectName)}/${encodeURIComponent(snapshotId)}/${encodeURIComponent(terminalId)}`;
+      } else {
+        url = `${wsUrl}/ws/shell/${encodeURIComponent(projectName)}/${encodeURIComponent(terminalId)}`;
+      }
+
       const newWs = new WebSocket(url);
       newWs.binaryType = 'arraybuffer';
       ws = newWs;
 
       newWs.onopen = () => {
         if (cancelled) { newWs.close(); return; }
-        // Send initial size
         const { cols, rows } = term;
         newWs.send(JSON.stringify({ type: 'resize', cols, rows }));
       };
@@ -119,7 +124,6 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
 
       newWs.onclose = () => {
         if (cancelled) return;
-        // Attempt reconnect after 2 seconds
         reconnectTimer = setTimeout(() => {
           if (!cancelled) connect();
         }, 2000);
@@ -140,15 +144,15 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
       }
       term.dispose();
     };
-  }, [projectName, serviceName]);
+  }, [projectName, terminalId, snapshotId]);
 
   return (
     <div className="panel h-full flex flex-col">
       <div className="panel-header">
         <span className="panel-title flex items-center gap-2">
-          <Bot size={16} className="text-envibe-accent" />
-          {serviceName}
-          <span className="text-xs text-envibe-text-subtle">terminal</span>
+          <Icon size={16} className="text-envibe-accent" />
+          {terminalName}
+          <span className="text-xs text-envibe-text-subtle">{label}</span>
         </span>
       </div>
       <div className="flex-1 min-h-0 p-1">
@@ -158,22 +162,35 @@ export function AgentTerminal({ projectName, serviceName }: AgentTerminalProps) 
   );
 }
 
-export function AgentTerminalDisconnected({ serviceName }: { serviceName: string }) {
+interface TerminalDisconnectedProps {
+  terminalName?: string;
+  terminalType?: TerminalType;
+}
+
+export function TerminalDisconnected({ terminalName = 'Terminal', terminalType = 'shell' }: TerminalDisconnectedProps) {
+  const Icon = terminalType === 'agent' ? Bot : TerminalIcon;
+  const label = terminalType === 'agent' ? 'agent' : 'shell';
+  const message = terminalType === 'agent' ? 'Agent disconnected' : 'Terminal disconnected';
+
   return (
     <div className="panel h-full flex flex-col">
       <div className="panel-header">
         <span className="panel-title flex items-center gap-2">
-          <Bot size={16} className="text-envibe-accent" />
-          {serviceName}
-          <span className="text-xs text-envibe-text-subtle">terminal</span>
+          <Icon size={16} className="text-envibe-accent" />
+          {terminalName}
+          <span className="text-xs text-envibe-text-subtle">{label}</span>
         </span>
       </div>
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center text-envibe-text-muted">
           <Unplug size={32} className="mx-auto mb-2 opacity-50" />
-          <p className="text-sm">Start the agent to open the terminal</p>
+          <p className="text-sm">{message}</p>
         </div>
       </div>
     </div>
   );
 }
+
+// Legacy exports for backwards compatibility
+export const ShellTerminal = UnifiedTerminal;
+export const ShellTerminalDisconnected = TerminalDisconnected;

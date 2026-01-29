@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::agent::AgentManager;
 use crate::config::{
     AppSettings, DockerServiceConfig, Project, ProjectConfig, ServiceConfig, ServiceState, ServiceStatus,
 };
@@ -23,8 +22,10 @@ use crate::error::Result;
 use crate::ports::{PortRegistry, ServiceType};
 use crate::process::{interpolate_env_map, parse_env_file, ProcessManager};
 use crate::state::{AppState, ProjectRegistry};
+use crate::terminal::{TerminalManager, TerminalSessions, TerminalStatus, TerminalType};
+use crate::worktree::WorktreeManager;
 
-use super::ws::{handle_websocket, ws_terminal_handler};
+use super::ws::{handle_websocket, ws_shell_handler};
 
 /// Shared application state for the server
 pub struct ServerState {
@@ -37,7 +38,11 @@ pub struct ServerState {
     pub docker: Option<DockerClient>,
     pub data_dir: PathBuf,
     pub process_manager: RwLock<ProcessManager>,
-    pub agent_manager: RwLock<AgentManager>,
+    pub worktree_manager: RwLock<WorktreeManager>,
+    /// Session metadata (Sync-safe, used for read operations)
+    pub terminal_sessions: RwLock<TerminalSessions>,
+    /// PTY handles (not Sync, used only in Mutex for write operations)
+    pub terminal_manager: std::sync::Mutex<TerminalManager>,
     pub log_tx: mpsc::Sender<String>,
 }
 
@@ -48,6 +53,33 @@ pub struct ProjectInfo {
     #[serde(rename = "hasDockerCompose")]
     pub has_docker_compose: bool,
     pub services: Vec<ServiceInfo>,
+    #[serde(default)]
+    pub terminals: Vec<TerminalSessionInfo>,
+    #[serde(default)]
+    pub snapshots: Vec<SnapshotInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSessionInfo {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub session_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotInfo {
+    pub id: String,
+    pub name: String,
+    pub branch: String,
+    pub path: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(default)]
+    pub services: Vec<ServiceInfo>,
+    #[serde(default)]
+    pub terminals: Vec<TerminalSessionInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,7 +124,13 @@ pub struct SetPortAction {
 }
 
 impl ProjectInfo {
-    pub fn from_project(p: &Project, app_state: &AppState, port_registry: &PortRegistry) -> Self {
+    pub fn from_project(
+        p: &Project,
+        app_state: &AppState,
+        port_registry: &PortRegistry,
+        worktree_manager: &WorktreeManager,
+        terminal_sessions: &TerminalSessions,
+    ) -> Self {
         let services = p
             .config
             .as_ref()
@@ -115,11 +153,65 @@ impl ProjectInfo {
             })
             .unwrap_or_default();
 
+        // Get terminals for project root (no snapshot)
+        let terminals: Vec<TerminalSessionInfo> = terminal_sessions
+            .get_sessions(&p.name, None)
+            .into_iter()
+            .map(|t| TerminalSessionInfo {
+                id: t.id,
+                name: t.name,
+                status: match t.status {
+                    TerminalStatus::Connected => "connected".to_string(),
+                    TerminalStatus::Disconnected => "disconnected".to_string(),
+                },
+                session_type: match t.session_type {
+                    TerminalType::Shell => "shell".to_string(),
+                    TerminalType::Agent => "agent".to_string(),
+                },
+            })
+            .collect();
+
+        // Get snapshots and their terminals
+        let snapshots: Vec<SnapshotInfo> = worktree_manager
+            .get_snapshots(&p.name)
+            .into_iter()
+            .map(|s| {
+                let snapshot_terminals: Vec<TerminalSessionInfo> = terminal_sessions
+                    .get_sessions(&p.name, Some(&s.id))
+                    .into_iter()
+                    .map(|t| TerminalSessionInfo {
+                        id: t.id,
+                        name: t.name,
+                        status: match t.status {
+                            TerminalStatus::Connected => "connected".to_string(),
+                            TerminalStatus::Disconnected => "disconnected".to_string(),
+                        },
+                        session_type: match t.session_type {
+                            TerminalType::Shell => "shell".to_string(),
+                            TerminalType::Agent => "agent".to_string(),
+                        },
+                    })
+                    .collect();
+
+                SnapshotInfo {
+                    id: s.id,
+                    name: s.name,
+                    branch: s.branch,
+                    path: s.path,
+                    created_at: s.created_at,
+                    services: Vec::new(), // Snapshots inherit project services for now
+                    terminals: snapshot_terminals,
+                }
+            })
+            .collect();
+
         ProjectInfo {
             name: p.name.clone(),
             path: p.path.to_string_lossy().to_string(),
             has_docker_compose: p.has_docker_compose,
             services,
+            terminals,
+            snapshots,
         }
     }
 }
@@ -163,18 +255,6 @@ impl ServiceInfo {
                 image: Some(c.image.clone()),
                 command: None,
             },
-            ServiceConfig::Agent(c) => ServiceInfo {
-                name: name.to_string(),
-                service_type: "agent".to_string(),
-                status: "stopped".to_string(),
-                port: None,
-                internal_port: None,
-                container_id: None,
-                process_id: None,
-                error_message: None,
-                image: None,
-                command: Some(c.command.clone()),
-            },
         }
     }
 
@@ -202,6 +282,9 @@ pub async fn run_server(data_dir: PathBuf, port: u16) -> Result<()> {
     let state = AppState::load(&data_dir).await.unwrap_or_default();
     let port_registry = PortRegistry::load(&data_dir).await.unwrap_or_default();
     let project_registry = ProjectRegistry::load(&data_dir).await.unwrap_or_default();
+    let worktree_manager = WorktreeManager::load(&data_dir).await.unwrap_or_default();
+    let terminal_sessions = TerminalSessions::load(&data_dir).await.unwrap_or_default();
+    let terminal_manager = TerminalManager::new();
     let docker = DockerClient::new().await.ok();
     let settings = AppSettings::default();
 
@@ -252,7 +335,9 @@ pub async fn run_server(data_dir: PathBuf, port: u16) -> Result<()> {
         docker,
         data_dir,
         process_manager: RwLock::new(ProcessManager::new()),
-        agent_manager: RwLock::new(AgentManager::new()),
+        worktree_manager: RwLock::new(worktree_manager),
+        terminal_sessions: RwLock::new(terminal_sessions),
+        terminal_manager: std::sync::Mutex::new(terminal_manager),
         log_tx,
     });
 
@@ -271,8 +356,16 @@ pub async fn run_server(data_dir: PathBuf, port: u16) -> Result<()> {
         .route("/api/projects/remove", post(remove_project))
         .route("/api/env/:project", get(get_env_vars))
         .route("/api/env/:project/:service", get(get_service_env_vars))
+        // Snapshot management
+        .route("/api/snapshots/create", post(create_snapshot))
+        .route("/api/snapshots/delete", post(delete_snapshot))
+        // Terminal management
+        .route("/api/terminals/create", post(create_terminal))
+        .route("/api/terminals/close", post(close_terminal))
+        // WebSocket routes
         .route("/ws", get(ws_handler))
-        .route("/ws/terminal/:project/:service", get(ws_terminal_route))
+        .route("/ws/shell/:project/:terminal_id", get(ws_shell_route))
+        .route("/ws/shell/:project/:snapshot/:terminal_id", get(ws_shell_snapshot_route))
         .route("/health", get(health_check))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(server_state);
@@ -373,7 +466,6 @@ async fn scan_projects(state: Arc<ServerState>) -> Result<()> {
                     name: project.name.clone(),
                     env_file: None,
                     services: compose_services,
-                    agents: HashMap::new(),
                 });
             }
         }
@@ -437,10 +529,14 @@ async fn scan_projects(state: Arc<ServerState>) -> Result<()> {
     // Build project infos
     let app_state = state.state.read().await;
     let port_registry = state.port_registry.read().await;
+    let worktree_manager = state.worktree_manager.read().await;
+    let terminal_sessions = state.terminal_sessions.read().await;
     let project_infos: Vec<ProjectInfo> = projects
         .iter()
-        .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry))
+        .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry, &worktree_manager, &terminal_sessions))
         .collect();
+    drop(terminal_sessions);
+    drop(worktree_manager);
     drop(port_registry);
     drop(app_state);
 
@@ -456,13 +552,17 @@ async fn scan_projects(state: Arc<ServerState>) -> Result<()> {
 
 async fn get_projects(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
     // Rebuild infos with current state
-    let projects = state.projects.read().await;
-    let app_state = state.state.read().await;
-    let port_registry = state.port_registry.read().await;
-    let infos: Vec<ProjectInfo> = projects
-        .iter()
-        .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry))
-        .collect();
+    let infos = {
+        let projects = state.projects.read().await;
+        let app_state = state.state.read().await;
+        let port_registry = state.port_registry.read().await;
+        let worktree_manager = state.worktree_manager.read().await;
+        let terminal_sessions = state.terminal_sessions.read().await;
+        projects
+            .iter()
+            .map(|p| ProjectInfo::from_project(p, &app_state, &port_registry, &worktree_manager, &terminal_sessions))
+            .collect::<Vec<_>>()
+    };
     Json(infos)
 }
 
@@ -470,16 +570,21 @@ async fn get_services(
     State(state): State<Arc<ServerState>>,
     Path(project_name): Path<String>,
 ) -> impl IntoResponse {
-    let projects = state.projects.read().await;
-    let app_state = state.state.read().await;
-    let port_registry = state.port_registry.read().await;
-    let project = projects.iter().find(|p| p.name == project_name);
+    let result = {
+        let projects = state.projects.read().await;
+        let app_state = state.state.read().await;
+        let port_registry = state.port_registry.read().await;
+        let worktree_manager = state.worktree_manager.read().await;
+        let terminal_sessions = state.terminal_sessions.read().await;
 
-    match project {
-        Some(p) => {
-            let info = ProjectInfo::from_project(p, &app_state, &port_registry);
-            Json(info.services).into_response()
-        }
+        projects.iter().find(|p| p.name == project_name).map(|p| {
+            let info = ProjectInfo::from_project(p, &app_state, &port_registry, &worktree_manager, &terminal_sessions);
+            info.services
+        })
+    };
+
+    match result {
+        Some(services) => Json(services).into_response(),
         None => (StatusCode::NOT_FOUND, "Project not found").into_response(),
     }
 }
@@ -705,50 +810,6 @@ async fn start_service(
                 }
             }
         }
-        ServiceConfig::Agent(agent_config) => {
-            let key = format!("{}:{}", action.project, action.service);
-
-            // Update state to starting
-            {
-                let mut app_state = state.state.write().await;
-                let mut svc_state = ServiceState::new(action.service.clone());
-                svc_state.status = ServiceStatus::Starting;
-                app_state.set_service_state(&action.project, svc_state);
-            }
-
-            let mut agent_manager = state.agent_manager.write().await;
-            match agent_manager.start_agent(
-                key,
-                &agent_config,
-                &project.path,
-                state.log_tx.clone(),
-                action.project.clone(),
-                action.service.clone(),
-            ).await {
-                Ok(pid) => {
-                    tracing::info!("Started agent {} with PID {}", action.service, pid);
-
-                    let mut app_state = state.state.write().await;
-                    let mut svc_state = ServiceState::new(action.service.clone());
-                    svc_state.status = ServiceStatus::Running;
-                    svc_state.process_id = Some(pid);
-                    app_state.set_service_state(&action.project, svc_state);
-
-                    Json(serde_json::json!({ "status": "started", "pid": pid })).into_response()
-                }
-                Err(e) => {
-                    tracing::error!("Failed to start agent: {}", e);
-
-                    let mut app_state = state.state.write().await;
-                    let mut svc_state = ServiceState::new(action.service.clone());
-                    svc_state.status = ServiceStatus::Error;
-                    svc_state.error_message = Some(format!("{}", e));
-                    app_state.set_service_state(&action.project, svc_state);
-
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to start agent: {}", e)).into_response()
-                }
-            }
-        }
     }
 }
 
@@ -826,14 +887,6 @@ async fn stop_service(
                 }
             }
         }
-        Some(ServiceConfig::Agent(_)) => {
-            let key = format!("{}:{}", action.project, action.service);
-            let mut agent_manager = state.agent_manager.write().await;
-            if let Err(e) = agent_manager.stop_agent(&key) {
-                tracing::error!("Failed to stop agent: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to stop agent: {}", e)).into_response();
-            }
-        }
         None => {
             // Service not found in config, try process manager anyway
             let mut process_manager = state.process_manager.write().await;
@@ -857,20 +910,8 @@ async fn restart_service(
 ) -> impl IntoResponse {
     tracing::info!("Restarting service: {}/{}", action.project, action.service);
 
-    // Stop first — check service type for agent
-    let is_agent = {
-        let projects = state.projects.read().await;
-        projects.iter().find(|p| p.name == action.project)
-            .and_then(|p| p.config.as_ref())
-            .and_then(|c| c.services.get(&action.service))
-            .is_some_and(|c| matches!(c, ServiceConfig::Agent(_)))
-    };
-
-    if is_agent {
-        let key = format!("{}:{}", action.project, action.service);
-        let mut agent_manager = state.agent_manager.write().await;
-        let _ = agent_manager.stop_agent(&key);
-    } else {
+    // Stop first
+    {
         let mut process_manager = state.process_manager.write().await;
         let _ = process_manager.stop_process(&action.project, &action.service).await;
     }
@@ -1091,6 +1132,214 @@ async fn get_service_env_vars(
     Json(env_vars)
 }
 
+// ===== Snapshot Management =====
+
+#[derive(Debug, Deserialize)]
+struct CreateSnapshotAction {
+    project: String,
+    name: String,
+    #[allow(dead_code)]
+    branch: String, // Ignored - we use current HEAD
+}
+
+async fn create_snapshot(
+    State(state): State<Arc<ServerState>>,
+    Json(action): Json<CreateSnapshotAction>,
+) -> impl IntoResponse {
+    tracing::info!("Creating snapshot '{}' for project '{}'", action.name, action.project);
+
+    // Find the project
+    let projects = state.projects.read().await;
+    let project = match projects.iter().find(|p| p.name == action.project) {
+        Some(p) => p.clone(),
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Project not found" }))).into_response(),
+    };
+    drop(projects);
+
+    // Create the snapshot
+    let mut worktree_manager = state.worktree_manager.write().await;
+    match worktree_manager.create_snapshot(&action.project, &project.path, &action.name) {
+        Ok(snapshot) => {
+            // Save to disk
+            if let Err(e) = worktree_manager.save(&state.data_dir).await {
+                tracing::error!("Failed to save worktree manager: {}", e);
+            }
+
+            Json(serde_json::json!({
+                "id": snapshot.id,
+                "name": snapshot.name,
+                "branch": snapshot.branch,
+                "path": snapshot.path,
+                "createdAt": snapshot.created_at,
+                "services": [],
+                "terminals": []
+            })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to create snapshot: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("{}", e) }))).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteSnapshotAction {
+    project: String,
+    #[serde(rename = "snapshotId")]
+    snapshot_id: String,
+}
+
+async fn delete_snapshot(
+    State(state): State<Arc<ServerState>>,
+    Json(action): Json<DeleteSnapshotAction>,
+) -> impl IntoResponse {
+    tracing::info!("Deleting snapshot '{}' from project '{}'", action.snapshot_id, action.project);
+
+    // Find the project
+    let projects = state.projects.read().await;
+    let project = match projects.iter().find(|p| p.name == action.project) {
+        Some(p) => p.clone(),
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Project not found" }))).into_response(),
+    };
+    drop(projects);
+
+    // Delete the snapshot
+    let mut worktree_manager = state.worktree_manager.write().await;
+    match worktree_manager.delete_snapshot(&action.project, &project.path, &action.snapshot_id) {
+        Ok(()) => {
+            // Save to disk
+            if let Err(e) = worktree_manager.save(&state.data_dir).await {
+                tracing::error!("Failed to save worktree manager: {}", e);
+            }
+
+            Json(serde_json::json!({ "status": "deleted" })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete snapshot: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("{}", e) }))).into_response()
+        }
+    }
+}
+
+// ===== Terminal Management =====
+
+#[derive(Debug, Deserialize)]
+struct CreateTerminalAction {
+    project: String,
+    #[serde(rename = "snapshotId")]
+    snapshot_id: Option<String>,
+    /// Terminal type: "shell" (default) or "agent"
+    #[serde(rename = "terminalType")]
+    terminal_type: Option<String>,
+    /// Agent command to run (e.g., "claude", "codex") - only used when terminal_type is "agent"
+    #[serde(rename = "agentCommand")]
+    agent_command: Option<String>,
+}
+
+async fn create_terminal(
+    State(state): State<Arc<ServerState>>,
+    Json(action): Json<CreateTerminalAction>,
+) -> impl IntoResponse {
+    let terminal_type = action.terminal_type.as_deref().unwrap_or("shell");
+    let agent_command = action.agent_command.as_deref().unwrap_or("claude");
+    tracing::info!("Creating {} terminal (command: {}) for project '{}', snapshot {:?}", terminal_type, agent_command, action.project, action.snapshot_id);
+
+    // Find the project
+    let projects = state.projects.read().await;
+    let project = match projects.iter().find(|p| p.name == action.project) {
+        Some(p) => p.clone(),
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Project not found" }))).into_response(),
+    };
+    drop(projects);
+
+    // Determine working directory
+    let working_dir = if let Some(ref snapshot_id) = action.snapshot_id {
+        let worktree_manager = state.worktree_manager.read().await;
+        match worktree_manager.get_snapshot(&action.project, snapshot_id) {
+            Some(snapshot) => PathBuf::from(&snapshot.path),
+            None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Snapshot not found" }))).into_response(),
+        }
+    } else {
+        project.path.clone()
+    };
+
+    // Create the terminal - need both sessions (metadata) and manager (PTY handles)
+    // Use a scoped block to ensure MutexGuard is dropped before any await
+    let mut terminal_sessions = state.terminal_sessions.write().await;
+    let result = {
+        let mut terminal_manager = state.terminal_manager.lock().unwrap();
+        match terminal_type {
+            "agent" => terminal_manager.create_agent_terminal(&mut terminal_sessions, &action.project, &working_dir, action.snapshot_id, agent_command),
+            _ => terminal_manager.create_terminal(&mut terminal_sessions, &action.project, &working_dir, action.snapshot_id),
+        }
+    };
+    // MutexGuard is now dropped
+
+    match result {
+        Ok(session) => {
+            // Save sessions to disk
+            if let Err(e) = terminal_sessions.save(&state.data_dir).await {
+                tracing::error!("Failed to save terminal sessions: {}", e);
+            }
+
+            Json(serde_json::json!({
+                "id": session.id,
+                "name": session.name,
+                "status": match session.status {
+                    TerminalStatus::Connected => "connected",
+                    TerminalStatus::Disconnected => "disconnected",
+                },
+                "type": match session.session_type {
+                    TerminalType::Shell => "shell",
+                    TerminalType::Agent => "agent",
+                }
+            })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to create terminal: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("{}", e) }))).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CloseTerminalAction {
+    #[serde(rename = "terminalId")]
+    terminal_id: String,
+}
+
+async fn close_terminal(
+    State(state): State<Arc<ServerState>>,
+    Json(action): Json<CloseTerminalAction>,
+) -> impl IntoResponse {
+    tracing::info!("Closing terminal '{}'", action.terminal_id);
+
+    // Use a scoped block to ensure MutexGuard is dropped before any await
+    let mut terminal_sessions = state.terminal_sessions.write().await;
+    let result = {
+        let mut terminal_manager = state.terminal_manager.lock().unwrap();
+        terminal_manager.close_terminal(&mut terminal_sessions, &action.terminal_id)
+    };
+    // MutexGuard is now dropped
+
+    match result {
+        Ok(()) => {
+            // Save sessions to disk
+            if let Err(e) = terminal_sessions.save(&state.data_dir).await {
+                tracing::error!("Failed to save terminal sessions: {}", e);
+            }
+
+            Json(serde_json::json!({ "status": "closed" })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Failed to close terminal: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": format!("{}", e) }))).into_response()
+        }
+    }
+}
+
+// ===== WebSocket Handlers =====
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
@@ -1098,12 +1347,21 @@ async fn ws_handler(
     ws.on_upgrade(|socket| handle_websocket(socket, state))
 }
 
-async fn ws_terminal_route(
+async fn ws_shell_route(
     ws: WebSocketUpgrade,
     State(state): State<Arc<ServerState>>,
-    Path((project, service)): Path<(String, String)>,
+    Path((project, terminal_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws_terminal_handler(socket, state, project, service))
+    ws.on_upgrade(move |socket| ws_shell_handler(socket, state, project, terminal_id))
+}
+
+async fn ws_shell_snapshot_route(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<ServerState>>,
+    Path((project, _snapshot, terminal_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    // The snapshot is part of the route but the terminal_id already knows which snapshot it belongs to
+    ws.on_upgrade(move |socket| ws_shell_handler(socket, state, project, terminal_id))
 }
 
 async fn health_check() -> impl IntoResponse {

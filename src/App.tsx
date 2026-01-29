@@ -1,12 +1,17 @@
 import { useEffect } from 'react';
-import { useStore, useSelectedProject, useSelectedService, createLogEntry, parseLogLine } from './stores/useStore';
+import { useStore, useSelectedProject, useSelectedService, useSelectedSnapshot, useContextTerminals, createLogEntry, parseLogLine } from './stores/useStore';
 import { Sidebar } from './components/Sidebar';
 import { ProjectsPanel } from './components/ProjectsPanel';
 import { ServicesPanel } from './components/ServicesPanel';
 import { LogViewer } from './components/LogViewer';
-import { AgentTerminal, AgentTerminalDisconnected } from './components/AgentTerminal';
+import { UnifiedTerminal, TerminalDisconnected } from './components/ShellTerminal';
+import { TerminalTabs } from './components/TerminalTabs';
 import { EnvPanel } from './components/EnvPanel';
 import { Header } from './components/Header';
+import { SetupModal } from './components/modals/SetupModal';
+import { SettingsModal } from './components/modals/SettingsModal';
+import { CreateProjectModal } from './components/modals/CreateProjectModal';
+import { CreateSnapshotModal } from './components/modals/CreateSnapshotModal';
 import type { Project, LogEntry } from './types';
 
 // Process a single log line and return the log entry (or null for status updates)
@@ -54,11 +59,25 @@ export default function App() {
   const updateServiceStatus = useStore((s) => s.updateServiceStatus);
   const addLogs = useStore((s) => s.addLogs);
   const showEnvPanel = useStore((s) => s.showEnvPanel);
+  const initSettings = useStore((s) => s.initSettings);
   const selectedProject = useSelectedProject();
-  const selectedService = useSelectedService();
+  useSelectedService(); // Keep selector subscribed for reactivity
+  useSelectedSnapshot(); // Keep selector subscribed for reactivity
+  const selectedTerminalId = useStore((s) => s.selectedTerminalId);
+  const selectedSnapshotId = useStore((s) => s.selectedSnapshotId);
+  const openTerminals = useStore((s) => s.openTerminals);
+  const contextTerminals = useContextTerminals();
 
-  const isAgentSelected = selectedService?.type === 'agent';
-  const isAgentRunning = isAgentSelected && selectedService?.status === 'running';
+  // Find the selected terminal from context
+  const selectedTerminal = selectedTerminalId
+    ? contextTerminals.find((t) => t.id === selectedTerminalId)
+    : null;
+  const isTerminalSelected = selectedTerminal && openTerminals.includes(selectedTerminal.id);
+
+  // Initialize settings on mount (before project fetch)
+  useEffect(() => {
+    initSettings();
+  }, [initSettings]);
 
   useEffect(() => {
     // Connect to Rust backend
@@ -131,37 +150,64 @@ export default function App() {
     }
   }, [setProjects, addLogs, updateServiceStatus]);
 
+  // Determine what to show in the main content area
+  const renderMainContent = () => {
+    // Show terminal if one is selected
+    if (isTerminalSelected && selectedProject && selectedTerminal) {
+      if (selectedTerminal.status === 'connected') {
+        return (
+          <UnifiedTerminal
+            projectName={selectedProject.name}
+            terminalId={selectedTerminal.id}
+            terminalName={selectedTerminal.name}
+            terminalType={selectedTerminal.type}
+            snapshotId={selectedSnapshotId ?? undefined}
+          />
+        );
+      } else {
+        return (
+          <TerminalDisconnected
+            terminalName={selectedTerminal.name}
+            terminalType={selectedTerminal.type}
+          />
+        );
+      }
+    }
+
+    return <LogViewer />;
+  };
+
   return (
-    <div className="h-screen flex flex-col bg-envibe-bg overflow-hidden">
-      <Header />
-      <div className="flex-1 flex overflow-hidden">
-        <Sidebar />
-        <main className="flex-1 flex overflow-hidden p-4 gap-4">
-          <div className="w-80 flex-shrink-0">
-            <ProjectsPanel />
-          </div>
-          <div className="w-80 flex-shrink-0">
-            <ServicesPanel />
-          </div>
-          <div className="flex-1 min-w-0">
-            {isAgentRunning && selectedProject ? (
-              <AgentTerminal
-                projectName={selectedProject.name}
-                serviceName={selectedService.name}
-              />
-            ) : isAgentSelected ? (
-              <AgentTerminalDisconnected serviceName={selectedService!.name} />
-            ) : (
-              <LogViewer />
-            )}
-          </div>
-          {showEnvPanel && (
-            <div className="w-96 flex-shrink-0">
-              <EnvPanel />
+    <>
+      <div className="h-screen flex flex-col bg-envibe-bg overflow-hidden">
+        <Header />
+        <div className="flex-1 flex overflow-hidden">
+          <Sidebar />
+          <main className="flex-1 flex overflow-hidden p-4 gap-4">
+            <div className="w-80 flex-shrink-0">
+              <ProjectsPanel />
             </div>
-          )}
-        </main>
+            <div className="w-80 flex-shrink-0">
+              <ServicesPanel />
+            </div>
+            <div className="flex-1 min-w-0 flex flex-col">
+              <TerminalTabs />
+              <div className="flex-1 min-h-0">
+                {renderMainContent()}
+              </div>
+            </div>
+            {showEnvPanel && (
+              <div className="w-96 flex-shrink-0">
+                <EnvPanel />
+              </div>
+            )}
+          </main>
+        </div>
       </div>
-    </div>
+      <SetupModal />
+      <SettingsModal />
+      <CreateProjectModal />
+      <CreateSnapshotModal />
+    </>
   );
 }

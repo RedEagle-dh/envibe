@@ -1,5 +1,13 @@
 export type ServiceStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
-export type ServiceType = 'docker' | 'process' | 'compose' | 'agent';
+export type ServiceType = 'docker' | 'process' | 'compose';
+export type AIAgent = 'claude-code' | 'codex';
+export type TerminalStatus = 'connected' | 'disconnected';
+export type TerminalType = 'shell' | 'agent';
+
+export interface AppSettings {
+  isFirstTimeSetupComplete: boolean;
+  selectedAgents: AIAgent[];
+}
 
 export interface Service {
   name: string;
@@ -14,11 +22,31 @@ export interface Service {
   command?: string;
 }
 
+export interface TerminalSession {
+  id: string;
+  name: string;
+  status: TerminalStatus;
+  type: TerminalType;
+}
+
+export interface Snapshot {
+  id: string;
+  name: string;
+  branch: string;
+  path: string;
+  createdAt: string;
+  services: Service[];
+  terminals: TerminalSession[];
+}
+
 export interface Project {
   name: string;
   path: string;
   hasDockerCompose: boolean;
   services: Service[];
+  terminals: TerminalSession[];
+  snapshots: Snapshot[];
+  isExpanded?: boolean;
 }
 
 export interface LogEntry {
@@ -46,8 +74,20 @@ export interface EnvibeAPI {
   setServicePort: (projectName: string, serviceName: string, port: number) => Promise<{ status: string; port?: number }>;
   addProject: () => Promise<{ status: string } | null>;
   removeProject: (projectPath: string) => Promise<{ status: string } | null>;
+  selectDirectory: (title?: string) => Promise<string | null>;
+  createProject: (parentPath: string, projectName: string, agents: string[]) => Promise<{ status: string; path: string } | { error: string }>;
   getEnvVars: (projectName: string, serviceName?: string) => Promise<Record<string, string>>;
   getBackendUrl: () => Promise<string>;
+
+  // Snapshot management
+  createSnapshot: (projectName: string, name: string, branch: string) => Promise<Snapshot | { error: string }>;
+  deleteSnapshot: (projectName: string, snapshotId: string) => Promise<{ status: string } | { error: string }>;
+
+  // Terminal management
+  createTerminal: (projectName: string, snapshotId?: string, terminalType?: TerminalType, agentCommand?: string) => Promise<TerminalSession | { error: string }>;
+  closeTerminal: (terminalId: string) => Promise<{ status: string } | { error: string }>;
+
+  // Events (batched for performance)
   onLog: (callback: (log: string) => void) => () => void;
   onLogs: (callback: (logs: string[]) => void) => () => void;
   onServiceUpdate: (callback: (update: { project: string; service: string; status: ServiceStatus; port?: number }) => void) => () => void;

@@ -1,5 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+export interface Snapshot {
+  id: string;
+  name: string;
+  branch: string;
+  path: string;
+  createdAt: string;
+  services: Service[];
+  terminals: TerminalSession[];
+}
+
+export interface TerminalSession {
+  id: string;
+  name: string;
+  status: 'connected' | 'disconnected';
+  type: 'shell' | 'agent';
+}
+
 export interface EnvibeAPI {
   // Projects
   getProjects: () => Promise<Project[]>;
@@ -14,12 +31,22 @@ export interface EnvibeAPI {
   // Project management
   addProject: () => Promise<{ status: string } | null>;
   removeProject: (projectPath: string) => Promise<{ status: string } | null>;
+  selectDirectory: (title?: string) => Promise<string | null>;
+  createProject: (parentPath: string, projectName: string, agents: string[]) => Promise<{ status: string; path: string } | { error: string }>;
 
   // Environment variables
   getEnvVars: (projectName: string, serviceName?: string) => Promise<Record<string, string>>;
 
   // Backend URL for WebSocket connections
   getBackendUrl: () => Promise<string>;
+
+  // Snapshot management
+  createSnapshot: (projectName: string, name: string, branch: string) => Promise<Snapshot | { error: string }>;
+  deleteSnapshot: (projectName: string, snapshotId: string) => Promise<{ status: string } | { error: string }>;
+
+  // Terminal management
+  createTerminal: (projectName: string, snapshotId?: string, terminalType?: 'shell' | 'agent', agentCommand?: string) => Promise<TerminalSession | { error: string }>;
+  closeTerminal: (terminalId: string) => Promise<{ status: string } | { error: string }>;
 
   // Events (batched for performance)
   onLog: (callback: (log: string) => void) => () => void;
@@ -34,11 +61,14 @@ export interface Project {
   path: string;
   hasDockerCompose: boolean;
   services: Service[];
+  terminals: TerminalSession[];
+  snapshots: Snapshot[];
+  isExpanded?: boolean;
 }
 
 export interface Service {
   name: string;
-  type: 'docker' | 'process' | 'compose' | 'agent';
+  type: 'docker' | 'process' | 'compose';
   status: 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
   port?: number;
   internalPort?: number;
@@ -63,8 +93,18 @@ const api: EnvibeAPI = {
   setServicePort: (projectName, serviceName, port) => ipcRenderer.invoke('set-service-port', projectName, serviceName, port),
   addProject: () => ipcRenderer.invoke('add-project'),
   removeProject: (projectPath) => ipcRenderer.invoke('remove-project', projectPath),
+  selectDirectory: (title) => ipcRenderer.invoke('select-directory', title),
+  createProject: (parentPath, projectName, agents) => ipcRenderer.invoke('create-project', parentPath, projectName, agents),
   getBackendUrl: () => ipcRenderer.invoke('get-backend-url'),
   getEnvVars: (projectName, serviceName) => ipcRenderer.invoke('get-env-vars', projectName, serviceName),
+
+  // Snapshot management
+  createSnapshot: (projectName, name, branch) => ipcRenderer.invoke('create-snapshot', projectName, name, branch),
+  deleteSnapshot: (projectName, snapshotId) => ipcRenderer.invoke('delete-snapshot', projectName, snapshotId),
+
+  // Terminal management
+  createTerminal: (projectName, snapshotId, terminalType, agentCommand) => ipcRenderer.invoke('create-terminal', projectName, snapshotId, terminalType, agentCommand),
+  closeTerminal: (terminalId) => ipcRenderer.invoke('close-terminal', terminalId),
 
   onLog: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, log: string) => callback(log);

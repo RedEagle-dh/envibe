@@ -65,7 +65,6 @@ async fn parse_docker_compose(path: &Path, project_path: &Path) -> Result<Option
         name: project_name,
         env_file: None,
         services,
-        agents: HashMap::new(),
     }))
 }
 

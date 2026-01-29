@@ -1,7 +1,7 @@
 use std::path::Path;
 use tokio::fs;
 
-use crate::config::types::{ProjectConfig, ServiceConfig};
+use crate::config::types::ProjectConfig;
 use crate::error::{EnvibeError, Result};
 
 pub async fn parse_config(path: &Path) -> Result<ProjectConfig> {
@@ -9,14 +9,7 @@ pub async fn parse_config(path: &Path) -> Result<ProjectConfig> {
         .await
         .map_err(|e| EnvibeError::Config(format!("Failed to read config file: {}", e)))?;
 
-    let mut config: ProjectConfig = serde_yaml::from_str(&content)?;
-
-    // Merge agents into services as ServiceConfig::Agent
-    for (name, agent_config) in std::mem::take(&mut config.agents) {
-        if !config.services.contains_key(&name) {
-            config.services.insert(name, ServiceConfig::Agent(agent_config));
-        }
-    }
+    let config: ProjectConfig = serde_yaml::from_str(&content)?;
 
     Ok(config)
 }

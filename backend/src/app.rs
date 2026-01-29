@@ -210,7 +210,6 @@ impl App {
                             name: project.name.clone(),
                             env_file: None,
                             services: compose_services,
-                            agents: std::collections::HashMap::new(),
                         });
                     }
 
@@ -441,10 +440,6 @@ impl App {
                 // Compose services are externally managed - just stream logs
                 self.attach_to_compose_service(project, service_name, compose_config)
                     .await?;
-            }
-            ServiceConfig::Agent(_) => {
-                // Agents are only supported in server mode (Electron frontend)
-                tracing::warn!("Agent services are not supported in TUI mode");
             }
         }
 
@@ -677,9 +672,6 @@ impl App {
                     service_name
                 ));
             }
-            ServiceConfig::Agent(_) => {
-                tracing::warn!("Agent services are not supported in TUI mode");
-            }
         }
 
         Ok(())
@@ -744,7 +736,6 @@ impl App {
                 ServiceConfig::Compose(_) => compose_services.push(name.clone()),
                 ServiceConfig::Docker(_) => docker_services.push(name.clone()),
                 ServiceConfig::Process(_) => process_services.push(name.clone()),
-                ServiceConfig::Agent(_) => {} // Agents not supported in TUI
             }
         }
 

@@ -1,4 +1,3 @@
-mod agent;
 mod app;
 mod config;
 mod docker;
@@ -7,7 +6,9 @@ mod ports;
 mod process;
 mod server;
 mod state;
+mod terminal;
 mod tui;
+mod worktree;
 
 use std::io;
 use std::time::Duration;
